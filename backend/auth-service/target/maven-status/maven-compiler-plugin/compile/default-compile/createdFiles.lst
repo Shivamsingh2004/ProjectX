@@ -1,8 +1,0 @@
-com/projectx/auth/SecurityConfig.class
-com/projectx/auth/ApiError.class
-com/projectx/auth/HealthController.class
-com/projectx/auth/GlobalExceptionHandler.class
-com/projectx/auth/AuthController.class
-com/projectx/auth/AuthResponse.class
-com/projectx/auth/Application.class
-com/projectx/auth/AuthRequest.class

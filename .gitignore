@@ -6,3 +6,6 @@ frontend/out/
 .env
 .idea/
 .vscode/
+__pycache__/
+*.pyc
+**/target/
