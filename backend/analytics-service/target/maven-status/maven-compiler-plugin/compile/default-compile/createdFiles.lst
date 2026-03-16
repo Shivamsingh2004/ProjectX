@@ -1,0 +1,5 @@
+com/projectx/analytics/ApiError.class
+com/projectx/analytics/HealthController.class
+com/projectx/analytics/GlobalExceptionHandler.class
+com/projectx/analytics/AnalyticsController.class
+com/projectx/analytics/Application.class
