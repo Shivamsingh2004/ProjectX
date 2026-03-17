@@ -1,12 +1,9 @@
-import { Card } from "@/components/ui";
+"use client";
+
+import { ChatComponent } from "@/components/ChatComponent";
+import { useAppStore } from "@/store/useAppStore";
 
 export default function ChatPage() {
-  return (
-    <div className="grid gap-4 lg:grid-cols-3">
-      <Card title="Conversation List"><p>Alex, Riley, Jordan</p></Card>
-      <div className="lg:col-span-2">
-        <Card title="Chat Window"><p>Realtime messages and typing indicators appear here.</p></Card>
-      </div>
-    </div>
-  );
+  const conversations = useAppStore((s) => s.conversations);
+  return <ChatComponent conversations={conversations} />;
 }

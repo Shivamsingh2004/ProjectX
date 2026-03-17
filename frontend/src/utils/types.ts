@@ -4,3 +4,11 @@ export type Conversation = {
   platform: string;
   lastMessage: string;
 };
+
+export type Message = {
+  id: string;
+  conversationId: string;
+  sender: "me" | "them";
+  text: string;
+  timestamp: number;
+};
