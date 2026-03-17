@@ -49,7 +49,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     if (jwksUri != null && !jwksUri.isBlank()) {
       this.jwtDecoder = NimbusJwtDecoder.withJwkSetUri(jwksUri).build();
     } else {
-      log.warn("supabase.jwks-uri is not configured — JWT validation is DISABLED");
+      // Only warn — the filter will reject all protected requests when unconfigured.
+      log.warn("supabase.jwks-uri is not configured — all protected endpoints will return 401");
       this.jwtDecoder = null;
     }
   }
@@ -67,8 +68,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
       throws ServletException, IOException {
 
     if (jwtDecoder == null) {
-      // JWT decoder not configured — pass through (dev/test mode only)
-      filterChain.doFilter(request, response);
+      // JWKS URI not configured — reject all protected requests (fail-closed)
+      reject(response, "Authentication service not configured");
       return;
     }
 

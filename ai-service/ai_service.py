@@ -44,7 +44,7 @@ def detect_tone(message: str) -> str:
     """
     msg = message.lower()
 
-    funny_signals = ["lol", "lmao", "haha", "😂", "🤣", "joke", "funny", "hilarious", "tbh ngl"]
+    funny_signals = ["lol", "lmao", "haha", "😂", "🤣", "joke", "funny", "hilarious", "tbh", "ngl"]
     flirty_signals = ["cute", "pretty", "handsome", "miss you", "😏", "😘", "wink", "crush", "like you"]
     serious_signals = [
         "feel", "think", "believe", "honestly", "actually", "important", "relationship",

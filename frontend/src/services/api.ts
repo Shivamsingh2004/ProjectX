@@ -1,4 +1,8 @@
-import axios from "axios";
+import axios, { type InternalAxiosRequestConfig } from "axios";
+
+interface RetryableConfig extends InternalAxiosRequestConfig {
+  __retried?: boolean;
+}
 
 export const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080",
@@ -8,7 +12,7 @@ export const api = axios.create({
 api.interceptors.response.use(
   (res) => res,
   async (err) => {
-    const config = err?.config;
+    const config = err?.config as RetryableConfig | undefined;
     // Retry idempotent GET requests once on network errors (not 4xx)
     if (
       config &&

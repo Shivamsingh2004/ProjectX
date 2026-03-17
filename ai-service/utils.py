@@ -34,7 +34,11 @@ def _get_redis():
         _redis_client.ping()  # verify connectivity on first use
         logger.info("Redis connected at %s:%s", host, port)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Redis unavailable (%s) — caching disabled", exc)
+        logger.warning(
+            "Redis unavailable (%s) — caching disabled. "
+            "Check REDIS_HOST and REDIS_PORT environment variables.",
+            exc,
+        )
         _redis_client = None
     return _redis_client
 

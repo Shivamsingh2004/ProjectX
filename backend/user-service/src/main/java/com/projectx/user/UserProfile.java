@@ -14,6 +14,7 @@ public record UserProfile(
   /** Backwards-compatible constructor that omits the new optional fields. */
   public UserProfile(@NotBlank String fullName, String bio,
       List<String> preferences, List<String> connectedPlatforms) {
+    // interests and personalityTraits default to empty lists when not supplied
     this(fullName, bio, List.of(), preferences, List.of(), connectedPlatforms);
   }
 }

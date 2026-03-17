@@ -41,15 +41,7 @@ public class MessagingController {
   /** REST endpoint: send a message and broadcast via WebSocket. */
   @PostMapping("/send")
   public MessagePayload send(@Valid @RequestBody MessagePayload payload) {
-    MessagePayload stored = new MessagePayload(
-        payload.conversationId(),
-        payload.platform(),
-        payload.content(),
-        payload.senderId(),
-        payload.messageId() != null ? payload.messageId() : UUID.randomUUID().toString(),
-        payload.timestamp() != null ? payload.timestamp() : Instant.now(),
-        "sent"
-    );
+    MessagePayload stored = enrichPayload(payload, "sent");
     messageStore.add(stored);
     template.convertAndSend("/topic/messages/" + stored.conversationId(), stored);
     return stored;
@@ -70,15 +62,7 @@ public class MessagingController {
   /** STOMP handler: client sends to /app/chat.message */
   @MessageMapping("/chat.message")
   public void handleMessage(@Payload MessagePayload payload) {
-    MessagePayload stored = new MessagePayload(
-        payload.conversationId(),
-        payload.platform(),
-        payload.content(),
-        payload.senderId(),
-        payload.messageId() != null ? payload.messageId() : UUID.randomUUID().toString(),
-        Instant.now(),
-        "delivered"
-    );
+    MessagePayload stored = enrichPayload(payload, "delivered");
     messageStore.add(stored);
     template.convertAndSend("/topic/messages/" + stored.conversationId(), stored);
   }
@@ -97,5 +81,22 @@ public class MessagingController {
     ReadReceipt stamped = new ReadReceipt(
         receipt.conversationId(), receipt.messageId(), receipt.readByUserId());
     template.convertAndSend("/topic/read/" + stamped.conversationId(), stamped);
+  }
+
+  // ------------------------------------------------------------------
+  // Helpers
+  // ------------------------------------------------------------------
+
+  /** Populate auto-generated fields (messageId, timestamp) and set status. */
+  private static MessagePayload enrichPayload(MessagePayload payload, String status) {
+    return new MessagePayload(
+        payload.conversationId(),
+        payload.platform(),
+        payload.content(),
+        payload.senderId(),
+        payload.messageId() != null ? payload.messageId() : UUID.randomUUID().toString(),
+        payload.timestamp() != null ? payload.timestamp() : Instant.now(),
+        status
+    );
   }
 }

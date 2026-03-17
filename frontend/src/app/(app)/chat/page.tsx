@@ -151,7 +151,9 @@ function AISuggestionPanel({
 
 export default function ChatPage() {
   const conversations = useAppStore((s) => s.conversations);
-  const [activeConv, setActiveConv] = useState<Conversation>(conversations[0]);
+  const [activeConv, setActiveConv] = useState<Conversation>(
+    () => conversations[0] ?? { id: "", name: "No conversations", platform: "", lastMessage: "" },
+  );
   const [messages, setMessages] = useState<Message[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [input, setInput] = useState("");
