@@ -3,6 +3,8 @@ package com.projectx.auth;
 import jakarta.validation.ConstraintViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -24,6 +26,18 @@ public class GlobalExceptionHandler {
   public ResponseEntity<ApiError> handleStatus(ResponseStatusException ex) {
     int status = ex.getStatusCode().value();
     return ResponseEntity.status(status).body(new ApiError("REQUEST_FAILED", ex.getReason(), status));
+  }
+
+  @ExceptionHandler(AuthenticationException.class)
+  public ResponseEntity<ApiError> handleAuthentication(AuthenticationException ex) {
+    return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+        .body(new ApiError("UNAUTHORIZED", "Invalid or missing token", 401));
+  }
+
+  @ExceptionHandler(AccessDeniedException.class)
+  public ResponseEntity<ApiError> handleAccessDenied(AccessDeniedException ex) {
+    return ResponseEntity.status(HttpStatus.FORBIDDEN)
+        .body(new ApiError("FORBIDDEN", "Access denied", 403));
   }
 
   @ExceptionHandler(Exception.class)
