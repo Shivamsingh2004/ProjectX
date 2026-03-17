@@ -3,3 +3,7 @@ server:
 spring:
   application:
     name: auth-service
+
+supabase:
+  jwks-uri: ${SUPABASE_JWKS_URI:}
+  issuer: ${SUPABASE_ISSUER:}
