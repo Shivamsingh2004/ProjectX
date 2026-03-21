@@ -22,4 +22,3 @@ public record UserProfile(
     List<String> personalityTraits,
     List<String> activityBehavior,
     List<String> connectedPlatforms) {}
-

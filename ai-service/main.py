@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Optional
 
@@ -5,7 +6,13 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from ai_service import generate_reply
-from utils import sanitize_context, sanitize_message
+from utils import (
+    build_cache_key,
+    get_cached_response,
+    sanitize_context,
+    sanitize_message,
+    set_cached_response,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -13,7 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="AI Service", version="1.0.0")
+app = FastAPI(title="AI Service", version="2.0.0")
 
 
 # ---------------------------------------------------------------------------
@@ -21,6 +28,7 @@ app = FastAPI(title="AI Service", version="1.0.0")
 # ---------------------------------------------------------------------------
 
 class ReplySuggestionRequest(BaseModel):
+    """Legacy endpoint request — kept for backwards compatibility."""
     conversation_context: str
 
 
@@ -45,7 +53,7 @@ class AiReplySuggestionResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Existing endpoints (unchanged behaviour)
+# Legacy endpoints (unchanged behaviour)
 # ---------------------------------------------------------------------------
 
 @app.post("/api/ai/reply-suggestion")
@@ -69,20 +77,37 @@ def profile_analysis(payload: ProfileAnalysisRequest):
 
 
 # ---------------------------------------------------------------------------
-# New AI reply-suggestion endpoint
+# New AI reply-suggestion endpoint (tone-aware, cached)
 # ---------------------------------------------------------------------------
 
 @app.post("/ai/reply-suggestion", response_model=AiReplySuggestionResponse)
 def ai_reply_suggestion(payload: AiReplySuggestionRequest):
-    """Generate 3 intelligent reply suggestions using the NVIDIA AI API."""
+    """Generate 3 tone-aware reply suggestions using the NVIDIA AI API.
+
+    Responses are cached in Redis (TTL 10 min) keyed by message + context hash.
+    """
     message = sanitize_message(payload.message)
     context = sanitize_context(payload.context or "")
 
     logger.info("POST /ai/reply-suggestion — message length=%d", len(message))
 
+    # Check cache first
+    cache_key = build_cache_key(message, context)
+    cached = get_cached_response(cache_key)
+    if cached:
+        try:
+            data = json.loads(cached)
+            if isinstance(data, list):
+                return AiReplySuggestionResponse(suggestions=data)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Corrupted cache entry — regenerating")
+
     suggestions = generate_reply(message, context if context else None)
     if not suggestions:
         logger.error("generate_reply returned an empty list.")
         raise HTTPException(status_code=500, detail="Failed to generate suggestions.")
+
+    # Cache the result
+    set_cached_response(cache_key, json.dumps(suggestions))
 
     return AiReplySuggestionResponse(suggestions=suggestions)
