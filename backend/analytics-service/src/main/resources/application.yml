@@ -3,3 +3,6 @@ server:
 spring:
   application:
     name: analytics-service
+supabase:
+  jwks-uri: https://exmaple.supabase.co/rest/v1/auth/v1/jwks
+  issuer: https://exmaple.supabase.co/auth/v1

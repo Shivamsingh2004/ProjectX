@@ -1,0 +1,61 @@
+# ============================================================================
+# Kyverno Admission Policy: Enforce Signed Images Only
+#
+# Prevents any unsigned container image from being admitted to the cluster.
+# Works with Cosign keyless signatures (Sigstore).
+# ============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signatures
+  annotations:
+    policies.kyverno.io/title: Verify Image Signatures
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      Ensures all container images in the projectx-prod namespace are signed
+      with Cosign keyless signatures via Sigstore.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: verify-cosign-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - projectx-prod
+                - projectx-staging
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/projectx/*"
+          attestors:
+            - entries:
+                - keyless:
+                    url: https://fulcio.sigstore.dev
+                    rekor:
+                      url: https://rekor.sigstore.dev
+                    ctlog:
+                      pubkey: |
+                        # Sigstore public key (auto-resolved by Kyverno)
+
+    - name: require-sbom-attestation
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - projectx-prod
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/projectx/*"
+          attestations:
+            - type: https://spdx.dev/Document
+              conditions:
+                - all:
+                    - key: "{{ creationInfo.created }}"
+                      operator: NotEquals
+                      value: ""

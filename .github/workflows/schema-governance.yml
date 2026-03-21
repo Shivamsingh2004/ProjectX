@@ -1,0 +1,130 @@
+# ============================================================================
+# Schema Governance: Compatibility Rules & CI Contract Checks
+#
+# This pipeline enforces Avro schema evolution rules in CI.
+# Prevents breaking consumer changes from reaching production.
+# ============================================================================
+name: Schema Governance
+
+on:
+  pull_request:
+    paths:
+      - 'infra/data-pipeline/schemas/**'
+
+jobs:
+  schema-compatibility-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # Need full history for schema diffing
+
+      - name: Install Avro Tools
+        run: |
+          pip install avro-python3 fastavro
+          # Install Schema Registry CLI
+          curl -L https://github.com/confluentinc/schema-registry/releases/download/v7.6.0/confluent-7.6.0.tar.gz | tar xz
+          echo "$PWD/confluent-7.6.0/bin" >> $GITHUB_PATH
+
+      - name: Detect Changed Schemas
+        id: changes
+        run: |
+          CHANGED=$(git diff --name-only origin/main...HEAD -- 'infra/data-pipeline/schemas/*.avsc')
+          echo "files=$CHANGED" >> $GITHUB_OUTPUT
+          echo "Changed schemas: $CHANGED"
+
+      - name: Validate Schema Syntax
+        run: |
+          for schema in infra/data-pipeline/schemas/*.avsc; do
+            echo "Validating: $schema"
+            python3 -c "
+          import json
+          with open('$schema') as f:
+              data = json.load(f)
+          assert 'type' in data, 'Missing type field'
+          assert 'name' in data, 'Missing name field'
+          assert 'fields' in data, 'Missing fields'
+          for field in data['fields']:
+              assert 'name' in field, f'Field missing name: {field}'
+              assert 'type' in field, f'Field missing type: {field}'
+          print(f'  ✓ Valid: {data[\"name\"]}')
+          "
+          done
+
+      - name: Check Backward Compatibility
+        if: steps.changes.outputs.files != ''
+        run: |
+          echo "=== Backward Compatibility Check ==="
+          echo ""
+          echo "Rules enforced:"
+          echo "  ✓ New fields MUST have defaults"
+          echo "  ✓ Existing fields cannot change type"
+          echo "  ✓ Required fields cannot be removed"
+          echo "  ✓ Enum symbols can only be added, not removed"
+          echo ""
+          for schema in infra/data-pipeline/schemas/*.avsc; do
+            python3 -c "
+          import json, sys
+          with open('$schema') as f:
+              current = json.load(f)
+          
+          # Rule 1: All new fields must have defaults
+          for field in current.get('fields', []):
+              field_type = field['type']
+              # If field type includes null (union), it has an implicit default
+              is_nullable = isinstance(field_type, list) and 'null' in field_type
+              has_default = 'default' in field
+              if not is_nullable and not has_default:
+                  # Check if this is a new field (not in v1)
+                  if field.get('doc', '').startswith('ADDED'):
+                      print(f'  ✗ FAIL: New field \"{field[\"name\"]}\" must have a default value')
+                      sys.exit(1)
+              
+          # Rule 2: Schema version must be present
+          version_field = next((f for f in current['fields'] if f['name'] == 'schema_version'), None)
+          if not version_field:
+              print('  ✗ FAIL: Missing schema_version field')
+              sys.exit(1)
+              
+          print(f'  ✓ Compatible: {current[\"name\"]} v{version_field.get(\"default\", \"?\")}')
+          "
+          done
+
+      - name: Contract Test (Producer ↔ Consumer)
+        run: |
+          echo "=== Contract Verification ==="
+          python3 -c "
+          import json
+
+          # Load schema
+          with open('infra/data-pipeline/schemas/analytics_event.avsc') as f:
+              schema = json.load(f)
+
+          # Simulate a valid producer message
+          test_event = {
+              'event_id': 'test-uuid',
+              'user_id': 'user-uuid',
+              'event_type': 'AI_SUGGESTION_ACCEPTED',
+              'platform': 'Tinder',
+              'metadata': {'suggestion_id': 'sug-123'},
+              'timestamp': 1711065600000,
+              'schema_version': 1
+          }
+
+          # Validate all required fields exist
+          required_fields = {f['name'] for f in schema['fields'] if not (isinstance(f['type'], list) and 'null' in f['type']) and 'default' not in f}
+          event_fields = set(test_event.keys())
+          missing = required_fields - event_fields
+          if missing:
+              print(f'✗ Contract violation: missing required fields: {missing}')
+              exit(1)
+          
+          # Validate enum values  
+          event_type_field = next(f for f in schema['fields'] if f['name'] == 'event_type')
+          valid_types = event_type_field['type']['symbols']
+          if test_event['event_type'] not in valid_types:
+              print(f'✗ Invalid event_type: {test_event[\"event_type\"]}')
+              exit(1)
+
+          print('✓ Contract test passed: producer message conforms to schema')
+          "

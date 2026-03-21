@@ -1,0 +1,162 @@
+# ============================================================================
+# Platform Engineering: Internal Developer Productivity
+#
+# Standardized service scaffolding, golden paths, and self-service tooling.
+# ============================================================================
+
+# ── Service Template (Backstage-compatible) ─────────────────────────────────
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: projectx-spring-service
+  title: ProjectX Spring Boot Microservice
+  description: |
+    Creates a production-ready Spring Boot microservice with all enterprise
+    patterns pre-configured: observability, security, health checks, CI/CD.
+  tags:
+    - java
+    - spring-boot
+    - recommended
+spec:
+  owner: platform-team
+  type: service
+
+  parameters:
+    - title: Service Information
+      required: [name, description, team]
+      properties:
+        name:
+          title: Service Name
+          type: string
+          pattern: "^[a-z][a-z0-9-]*$"
+          description: "Lowercase with hyphens (e.g., payment-service)"
+        description:
+          title: Description
+          type: string
+        team:
+          title: Owning Team
+          type: string
+          enum: [backend, ml-engineering, infra, frontend]
+        costCenter:
+          title: Cost Center
+          type: string
+          default: platform
+
+    - title: Features
+      properties:
+        hasDatabase:
+          title: Requires Database
+          type: boolean
+          default: true
+        hasKafka:
+          title: Requires Kafka
+          type: boolean
+          default: false
+        hasRedis:
+          title: Requires Redis
+          type: boolean
+          default: false
+        hasAiIntegration:
+          title: AI Service Integration
+          type: boolean
+          default: false
+
+  steps:
+    - id: generate
+      name: Generate Service
+      action: fetch:template
+      input:
+        url: ./skeleton
+        values:
+          name: ${{ parameters.name }}
+          description: ${{ parameters.description }}
+          team: ${{ parameters.team }}
+          costCenter: ${{ parameters.costCenter }}
+          hasDatabase: ${{ parameters.hasDatabase }}
+          hasKafka: ${{ parameters.hasKafka }}
+          hasRedis: ${{ parameters.hasRedis }}
+
+    - id: publish
+      name: Publish to GitHub
+      action: publish:github
+      input:
+        repoUrl: github.com?owner=projectx&repo=${{ parameters.name }}
+        defaultBranch: main
+
+    - id: register
+      name: Register in Backstage
+      action: catalog:register
+      input:
+        repoContentsUrl: ${{ steps.publish.output.repoContentsUrl }}
+        catalogInfoPath: /catalog-info.yaml
+
+    - id: create-argocd-app
+      name: Setup ArgoCD
+      action: argocd:create-resources
+      input:
+        appName: ${{ parameters.name }}
+        projectName: projectx
+        repoUrl: ${{ steps.publish.output.remoteUrl }}
+        path: helm
+
+---
+# ── Developer Portal Catalog Entry ─────────────────────────────────────────
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: projectx
+  description: ProjectX Dating Aggregator Platform
+  annotations:
+    backstage.io/techdocs-ref: dir:.
+spec:
+  owner: platform-team
+  domain: dating-platform
+
+---
+# ── Service Catalog Entries ─────────────────────────────────────────────────
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: api-gateway
+  description: API Gateway - request routing, auth, load shedding, threat detection
+  annotations:
+    prometheus.io/alert: "true"
+    grafana/dashboard-selector: projectx-slo
+    pagerduty.com/service-id: PX-GATEWAY
+  tags: [java, spring-boot, gateway]
+  links:
+    - title: Runbook
+      url: https://wiki.projectx.internal/runbooks/api-gateway
+    - title: SLO Dashboard
+      url: https://grafana.projectx.internal/d/projectx-slo
+spec:
+  type: service
+  lifecycle: production
+  owner: infra
+  system: projectx
+  providesApis: [projectx-api]
+  dependsOn:
+    - component:messaging-service
+    - component:user-service
+    - component:auth-service
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: ai-service
+  description: AI Service - reply suggestions, personalization, embeddings, quality loop
+  tags: [python, fastapi, ai, ml]
+  links:
+    - title: API Docs
+      url: https://ai.projectx.internal/docs
+    - title: Eval Dashboard
+      url: https://grafana.projectx.internal/d/ai-quality
+spec:
+  type: service
+  lifecycle: production
+  owner: ml-engineering
+  system: projectx
+  dependsOn:
+    - resource:redis
+    - resource:nvidia-api

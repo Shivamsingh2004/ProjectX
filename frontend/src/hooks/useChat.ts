@@ -75,9 +75,9 @@ export function useChat(conversationId: string, partnerName: string) {
       abortRef.current = controller;
 
       setSuggestionsLoading(true);
-      fetchAiSuggestions({ conversationId, lastMessage }, controller.signal)
+      fetchAiSuggestions(lastMessage, controller.signal)
         .then((s) => {
-          setSuggestions(s);
+          setSuggestions(s.suggestions);
           setSuggestionsLoading(false);
         })
         .catch((err: unknown) => {

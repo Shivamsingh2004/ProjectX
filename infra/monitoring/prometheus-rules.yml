@@ -1,0 +1,107 @@
+# ============================================================================
+# 1. SLO DEFINITIONS & BURN-RATE ALERTING (Prometheus Recording + Alert Rules)
+# ============================================================================
+#
+# This defines multi-window, multi-burn-rate SLO alerting (Google SRE handbook
+# pattern). An SLO violation triggers at varying severity depending on how
+# fast the error budget is being consumed.
+#
+# SLOs:
+#   - API Gateway:  99.9% availability (≤43.2 min downtime/month)
+#   - AI Service:   99.5% availability (≤3.6 hr downtime/month)
+#   - P99 Latency:  ≤500ms for all /api/* endpoints
+# ============================================================================
+groups:
+  # ── Recording rules ────────────────────────────────────────────────────────
+  - name: slo.recording
+    interval: 30s
+    rules:
+      # Total request rate (5m window) by service
+      - record: projectx:http_requests:rate5m
+        expr: sum by (job) (rate(http_server_requests_seconds_count[5m]))
+
+      # Error rate (non-2xx) by service
+      - record: projectx:http_errors:rate5m
+        expr: |
+          sum by (job) (
+            rate(http_server_requests_seconds_count{status=~"5.."}[5m])
+          )
+
+      # Availability ratio (1 - error_rate / total_rate)
+      - record: projectx:availability:ratio_rate5m
+        expr: |
+          1 - (
+            projectx:http_errors:rate5m
+            / clamp_min(projectx:http_requests:rate5m, 1)
+          )
+
+      # P99 latency by service
+      - record: projectx:http_latency:p99_5m
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (job, le) (rate(http_server_requests_seconds_bucket[5m]))
+          )
+
+  # ── Burn-rate alert rules (multi-window) ────────────────────────────────────
+  - name: slo.alerts
+    rules:
+      # === CRITICAL: 14.4x burn rate over 1hr → budget gone in ~2 days ===
+      - alert: HighErrorBurnRate_Critical
+        expr: |
+          (
+            1 - (
+              sum by (job)(rate(http_server_requests_seconds_count{status=~"5.."}[1h]))
+              / clamp_min(sum by (job)(rate(http_server_requests_seconds_count[1h])), 1)
+            )
+          ) < (1 - 14.4 * (1 - 0.999))
+        for: 2m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "SLO Breach → {{ $labels.job }} burning error budget at 14.4x"
+          description: "Service {{ $labels.job }} availability has dropped below the 1-hour burn rate for a 99.9% SLO. Immediate investigation required."
+          runbook_url: "https://wiki.projectx.internal/runbooks/slo-breach"
+
+      # === WARNING: 6x burn rate over 6hr → budget gone in ~5 days ===
+      - alert: HighErrorBurnRate_Warning
+        expr: |
+          (
+            1 - (
+              sum by (job)(rate(http_server_requests_seconds_count{status=~"5.."}[6h]))
+              / clamp_min(sum by (job)(rate(http_server_requests_seconds_count[6h])), 1)
+            )
+          ) < (1 - 6 * (1 - 0.999))
+        for: 5m
+        labels:
+          severity: warning
+          slo: availability
+        annotations:
+          summary: "SLO Warning → {{ $labels.job }} burning error budget at 6x"
+          description: "Service {{ $labels.job }} availability degraded over 6h window."
+
+      # === P99 Latency SLO: >500ms for >5min ===
+      - alert: HighP99Latency
+        expr: projectx:http_latency:p99_5m > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          slo: latency
+        annotations:
+          summary: "P99 latency for {{ $labels.job }} exceeds 500ms SLO"
+          description: "{{ $labels.job }} P99 latency is {{ $value | humanizeDuration }}."
+
+      # === AI service specific: response time >3s ===
+      - alert: AIServiceSlowResponse
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(http_server_requests_seconds_bucket{job="ai-service"}[5m]))
+          ) > 3
+        for: 3m
+        labels:
+          severity: warning
+          slo: ai_latency
+        annotations:
+          summary: "AI service P95 latency exceeds 3 seconds"

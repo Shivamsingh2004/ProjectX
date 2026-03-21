@@ -1,0 +1,32 @@
+
+global:
+  namespace: projectx-prod
+  domain: api.projectx.com
+
+apiGateway:
+  replicaCount: 3
+  image: projectx/api-gateway:latest
+  port: 8080
+
+messagingService:
+  replicaCount: 5
+  image: projectx/messaging-service:latest
+  port: 8084
+  kafka:
+    partitions: 10
+
+aiService:
+  replicaCount: 3
+  image: projectx/ai-service:latest
+  port: 8000
+  redis:
+    host: redis-master
+
+frontend:
+  replicaCount: 3
+  image: projectx/frontend:latest
+  port: 3000
+
+istio:
+  enabled: true
+  mtls: STRICT

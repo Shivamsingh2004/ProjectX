@@ -1,0 +1,149 @@
+# ============================================================================
+# FinOps: HPA + VPA + Cost Attribution Labels per Service
+# ============================================================================
+
+# ── HPA: Horizontal Pod Autoscaler (reactive CPU/memory + custom metrics) ───
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: messaging-service-hpa
+  namespace: projectx-prod
+  labels:
+    cost-center: messaging
+    team: backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: messaging-service
+  minReplicas: 3
+  maxReplicas: 25
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 3
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 120
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 65
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75
+    # Custom metric: scale on request queue depth
+    - type: Pods
+      pods:
+        metric:
+          name: http_server_requests_seconds_count
+        target:
+          type: AverageValue
+          averageValue: "1000"
+
+---
+# ── VPA: Vertical Pod Autoscaler (recommendation mode for right-sizing) ────
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: messaging-service-vpa
+  namespace: projectx-prod
+  labels:
+    cost-center: messaging
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: messaging-service
+  updatePolicy:
+    updateMode: "Off"     # Recommend only; don't auto-apply to avoid restarts
+  resourcePolicy:
+    containerPolicies:
+      - containerName: messaging-service
+        minAllowed:
+          cpu: 100m
+          memory: 256Mi
+        maxAllowed:
+          cpu: 2000m
+          memory: 2Gi
+
+---
+# ── AI Service HPA (scale on response latency) ─────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ai-service-hpa
+  namespace: projectx-prod
+  labels:
+    cost-center: ai-platform
+    team: ml-engineering
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ai-service
+  minReplicas: 2
+  maxReplicas: 15
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+    scaleDown:
+      stabilizationWindowSeconds: 600   # Slow scale-down for AI pods (expensive cold start)
+      policies:
+        - type: Percent
+          value: 5
+          periodSeconds: 300
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+---
+# ── API Gateway HPA ──────────────────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-gateway-hpa
+  namespace: projectx-prod
+  labels:
+    cost-center: platform
+    team: infra
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-gateway
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60

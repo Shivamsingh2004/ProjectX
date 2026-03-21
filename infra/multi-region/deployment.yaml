@@ -1,0 +1,122 @@
+# ============================================================================
+# Multi-Region Active-Active Deployment
+#
+# Pattern: Regional Istio meshes federated via Admiral, with CockroachDB
+# or Supabase read replicas. Kafka MirrorMaker 2 for cross-region replication.
+# ============================================================================
+
+# ── Region Definitions ──────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: region-config
+  namespace: projectx-prod
+data:
+  PRIMARY_REGION: "us-east-1"
+  SECONDARY_REGION: "eu-west-1"
+  TERTIARY_REGION: "ap-south-1"
+  FAILOVER_MODE: "automatic"           # automatic | manual
+  FAILOVER_THRESHOLD_SECONDS: "30"     # seconds of unhealthy before failover
+  REGIONAL_SLO_AVAILABILITY: "99.95"   # per-region SLO
+  GLOBAL_SLO_AVAILABILITY: "99.99"     # cross-region composite SLO
+
+---
+# ── Global Server Load Balancing (GSLB) via Istio ServiceEntry ──────────────
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: global-api-gateway
+  namespace: projectx-prod
+spec:
+  hosts:
+    - api.projectx.com
+  location: MESH_INTERNAL
+  ports:
+    - number: 443
+      name: https
+      protocol: TLS
+  resolution: DNS
+  endpoints:
+    - address: api-us-east.projectx.internal
+      locality: us-east-1
+      weight: 50
+    - address: api-eu-west.projectx.internal
+      locality: eu-west-1
+      weight: 30
+    - address: api-ap-south.projectx.internal
+      locality: ap-south-1
+      weight: 20
+
+---
+# ── Locality-Aware Load Balancing ───────────────────────────────────────────
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: api-gateway-locality
+  namespace: projectx-prod
+spec:
+  host: api-gateway
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+      http:
+        h2UpgradePolicy: DEFAULT
+        maxRequestsPerConnection: 100
+    loadBalancer:
+      localityLbSetting:
+        enabled: true
+        failover:
+          - from: us-east-1
+            to: eu-west-1
+          - from: eu-west-1
+            to: us-east-1
+          - from: ap-south-1
+            to: us-east-1
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 10s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+
+---
+# ── Kafka MirrorMaker 2 (Cross-Region Replication) ─────────────────────────
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaMirrorMaker2
+metadata:
+  name: cross-region-mirror
+  namespace: projectx-prod
+spec:
+  version: 3.7.0
+  replicas: 2
+  connectCluster: "target-cluster"
+  clusters:
+    - alias: "source-cluster"
+      bootstrapServers: kafka-us-east:9092
+      tls:
+        trustedCertificates:
+          - secretName: kafka-cluster-ca-cert
+            certificate: ca.crt
+    - alias: "target-cluster"
+      bootstrapServers: kafka-eu-west:9092
+      tls:
+        trustedCertificates:
+          - secretName: kafka-cluster-ca-cert
+            certificate: ca.crt
+  mirrors:
+    - sourceCluster: "source-cluster"
+      targetCluster: "target-cluster"
+      sourceConnector:
+        config:
+          replication.factor: 3
+          offset-syncs.topic.replication.factor: 3
+          sync.topic.acls.enabled: "false"
+          replication.policy.class: "org.apache.kafka.connect.mirror.IdentityReplicationPolicy"
+      heartbeatConnector:
+        config:
+          heartbeats.topic.replication.factor: 3
+      checkpointConnector:
+        config:
+          checkpoints.topic.replication.factor: 3
+          sync.group.offsets.enabled: "true"
+      topicsPattern: "analytics-events|notification-events|activity-events"

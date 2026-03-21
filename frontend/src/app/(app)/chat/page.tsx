@@ -1,8 +1,8 @@
 "use client";
 
 import { motion, AnimatePresence } from "framer-motion";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "@/services/api";
+import { useCallback, useEffect, useRef, useState, memo } from "react";
+import { api, fetchAiSuggestions } from "@/services/api";
 import { socket } from "@/services/socket";
 import { useAppStore } from "@/store/useAppStore";
 import type { Conversation } from "@/utils/types";
@@ -48,21 +48,21 @@ function MessageSkeleton() {
 // Conversation list item
 // ---------------------------------------------------------------------------
 
-function ConversationItem({
+const ConversationItem = memo(function ConversationItem({
   conv,
   active,
   onClick,
 }: {
   conv: Conversation;
   active: boolean;
-  onClick: () => void;
+  onClick: (conv: Conversation) => void;
 }) {
   return (
     <motion.button
       layout
       whileHover={{ scale: 1.01 }}
       whileTap={{ scale: 0.99 }}
-      onClick={onClick}
+      onClick={() => onClick(conv)}
       className={`w-full rounded-xl border p-3 text-left transition-colors ${
         active
           ? "border-pink-400 bg-pink-50 dark:border-pink-600 dark:bg-pink-950/40"
@@ -78,13 +78,13 @@ function ConversationItem({
       <p className="mt-0.5 truncate text-xs text-zinc-500">{conv.lastMessage}</p>
     </motion.button>
   );
-}
+});
 
 // ---------------------------------------------------------------------------
 // AI Suggestion panel
 // ---------------------------------------------------------------------------
 
-function AISuggestionPanel({
+const AISuggestionPanel = memo(function AISuggestionPanel({
   suggestion,
   loading,
   onUse,
@@ -143,7 +143,7 @@ function AISuggestionPanel({
       </div>
     </motion.div>
   );
-}
+});
 
 // ---------------------------------------------------------------------------
 // Main chat page
@@ -224,11 +224,8 @@ export default function ChatPage() {
     aiDebounceRef.current = setTimeout(async () => {
       setAILoading(true);
       try {
-        const res = await api.post<AISuggestion>("/api/ai/reply-suggestion", {
-          message: lastMessage,
-          user_context: `Talking to ${activeConv.name} on ${activeConv.platform}`,
-        });
-        setAISuggestion(res.data);
+        const aiResponse = await fetchAiSuggestions(lastMessage);
+        setAISuggestion(aiResponse);
       } catch {
         // Graceful degradation — keep previous suggestions
       } finally {
@@ -298,6 +295,14 @@ export default function ChatPage() {
     return "✓";
   };
 
+  const handleConvClick = useCallback((conv: Conversation) => {
+    setActiveConv(conv);
+  }, []);
+
+  const handleUseSuggestion = useCallback((text: string) => {
+    setInput(text);
+  }, []);
+
   return (
     <div className="grid h-[calc(100vh-8rem)] gap-4 lg:grid-cols-3">
       {/* Conversation list */}
@@ -310,7 +315,7 @@ export default function ChatPage() {
             key={c.id}
             conv={c}
             active={c.id === activeConv.id}
-            onClick={() => setActiveConv(c)}
+            onClick={handleConvClick}
           />
         ))}
       </aside>
@@ -406,7 +411,7 @@ export default function ChatPage() {
           <AISuggestionPanel
             suggestion={aiSuggestion}
             loading={aiLoading}
-            onUse={(text) => setInput(text)}
+            onUse={handleUseSuggestion}
           />
         </div>
 

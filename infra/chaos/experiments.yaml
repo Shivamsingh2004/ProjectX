@@ -1,0 +1,209 @@
+# ============================================================================
+# Chaos Engineering Experiments (LitmusChaos CRDs)
+#
+# These experiments validate system resilience under controlled failure
+# conditions. Run in staging; promote to canary production after validation.
+# ============================================================================
+
+# ── Experiment 1: Pod Kill (random service pod termination) ─────────────────
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: pod-kill-messaging
+  namespace: projectx-staging
+spec:
+  appinfo:
+    appns: projectx-staging
+    applabel: app=messaging-service
+    appkind: deployment
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-delete
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "60"                 # 60 seconds of chaos
+            - name: CHAOS_INTERVAL
+              value: "10"                 # Kill a pod every 10 seconds
+            - name: FORCE
+              value: "true"
+            - name: PODS_AFFECTED_PERC
+              value: "50"                 # Kill 50% of pods
+        probe:
+          - name: availability-check
+            type: httpProbe
+            httpProbe/inputs:
+              url: http://api-gateway.projectx-staging/actuator/health
+              method:
+                get:
+                  criteria: "=="
+                  responseCode: "200"
+            mode: Continuous
+            runProperties:
+              probeTimeout: 5s
+              interval: 5s
+              retry: 3
+
+---
+# ── Experiment 2: Network Latency Injection (AI service) ───────────────────
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: network-latency-ai
+  namespace: projectx-staging
+spec:
+  appinfo:
+    appns: projectx-staging
+    applabel: app=ai-service
+    appkind: deployment
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-network-latency
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "120"
+            - name: NETWORK_LATENCY
+              value: "2000"              # Inject 2 second latency
+            - name: JITTER
+              value: "500"               # ±500ms jitter
+            - name: CONTAINER_RUNTIME
+              value: "containerd"
+        probe:
+          - name: fallback-check
+            type: httpProbe
+            httpProbe/inputs:
+              url: http://messaging-service.projectx-staging/api/ai/reply
+              method:
+                post:
+                  contentType: application/json
+                  body: '{"message": "chaos test"}'
+                  criteria: "=="
+                  responseCode: "200"
+            mode: Continuous
+            runProperties:
+              probeTimeout: 15s
+              interval: 10s
+              retry: 2
+
+---
+# ── Experiment 3: Redis Failure (cache unavailability) ─────────────────────
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: redis-failure
+  namespace: projectx-staging
+spec:
+  appinfo:
+    appns: projectx-staging
+    applabel: app=redis-master
+    appkind: deployment
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-delete
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "90"
+            - name: FORCE
+              value: "true"
+        probe:
+          - name: ai-service-resilience
+            type: httpProbe
+            httpProbe/inputs:
+              url: http://ai-service.projectx-staging/ai/reply-suggestion
+              method:
+                post:
+                  contentType: application/json
+                  body: '{"message": "test cache miss"}'
+                  criteria: "=="
+                  responseCode: "200"
+            mode: Continuous
+            runProperties:
+              probeTimeout: 10s
+              interval: 10s
+              retry: 3
+
+---
+# ── Experiment 4: Kafka Broker Failure ─────────────────────────────────────
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: kafka-broker-failure
+  namespace: projectx-staging
+spec:
+  appinfo:
+    appns: projectx-staging
+    applabel: app=kafka
+    appkind: statefulset
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-delete
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "120"
+            - name: CHAOS_INTERVAL
+              value: "30"
+            - name: PODS_AFFECTED_PERC
+              value: "33"                # Kill 1 of 3 brokers
+        probe:
+          - name: dlq-check
+            type: cmdProbe
+            cmdProbe/inputs:
+              command: >
+                kafka-consumer-groups --bootstrap-server kafka:9092
+                --describe --group analytics-group 2>/dev/null |
+                grep -c "analytics-events"
+              comparator:
+                type: int
+                criteria: ">="
+                value: "1"
+            mode: Edge
+            runProperties:
+              probeTimeout: 30s
+              interval: 30s
+              retry: 2
+
+---
+# ── Experiment 5: CPU Stress on Gateway (capacity testing) ─────────────────
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: cpu-stress-gateway
+  namespace: projectx-staging
+spec:
+  appinfo:
+    appns: projectx-staging
+    applabel: app=api-gateway
+    appkind: deployment
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-cpu-hog
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: "180"
+            - name: CPU_CORES
+              value: "2"
+            - name: PODS_AFFECTED_PERC
+              value: "30"
+        probe:
+          - name: hpa-reaction-check
+            type: k8sProbe
+            k8sProbe/inputs:
+              group: autoscaling
+              version: v2
+              resource: horizontalpodautoscalers
+              namespace: projectx-staging
+              fieldSelector: metadata.name=api-gateway-hpa
+              operation: present
+            mode: Continuous
+            runProperties:
+              probeTimeout: 10s
+              interval: 30s

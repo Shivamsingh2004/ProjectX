@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 NVIDIA_API_BASE = os.environ.get(
     "NVIDIA_API_BASE", "https://integrate.api.nvidia.com/v1"
 )
-NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "")
+NVIDIA_API_KEY = os.environ.get("NVIDIA_API_KEY", "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")
 NVIDIA_MODEL = os.environ.get(
     "NVIDIA_MODEL", "meta/llama-3.1-8b-instruct"
 )
@@ -175,7 +175,7 @@ def _parse_suggestions(raw: str) -> list[str]:
 
 def generate_reply(
     message: str, context: Optional[str] = None
-) -> list[str]:
+) -> dict:
     """Generate 3 tone-aware reply suggestions for *message* using the NVIDIA AI API.
 
     Uses streaming to accumulate the full response, then parses the JSON array.
@@ -187,7 +187,7 @@ def generate_reply(
 
     if not message:
         logger.warning("Empty message received; returning fallback suggestions.")
-        return _FALLBACK_SUGGESTIONS[:]
+        return {"suggestions": _FALLBACK_SUGGESTIONS[:], "tone": "casual"}
 
     tone = detect_tone(message)
     fallbacks = _TONE_FALLBACKS.get(tone, _FALLBACK_SUGGESTIONS)
@@ -196,7 +196,7 @@ def generate_reply(
         client = _build_client()
     except RuntimeError as exc:
         logger.error("Client configuration error: %s", exc)
-        return fallbacks[:]
+        return {"suggestions": fallbacks[:], "tone": tone}
 
     user_prompt = _build_user_prompt(message, context, tone)
 
@@ -219,14 +219,14 @@ def generate_reply(
                 accumulated += delta.content
     except OpenAIError as exc:
         logger.error("NVIDIA API error: %s", exc)
-        return fallbacks[:]
+        return {"suggestions": fallbacks[:], "tone": tone}
     except Exception as exc:  # noqa: BLE001
         logger.error("Unexpected error calling NVIDIA API: %s", exc)
-        return fallbacks[:]
+        return {"suggestions": fallbacks[:], "tone": tone}
 
     if not accumulated.strip():
         logger.warning("Empty response from NVIDIA API; returning fallback.")
-        return fallbacks[:]
+        return {"suggestions": fallbacks[:], "tone": tone}
 
     suggestions = _parse_suggestions(accumulated)
     if len(suggestions) < 3:
@@ -234,4 +234,4 @@ def generate_reply(
         suggestions.extend(fallbacks[:3 - len(suggestions)])
 
     logger.info("Generated %d suggestion(s) with tone=%s.", len(suggestions), tone)
-    return suggestions
+    return {"suggestions": suggestions, "tone": tone}

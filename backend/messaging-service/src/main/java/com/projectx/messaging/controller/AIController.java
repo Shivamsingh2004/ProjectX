@@ -2,6 +2,8 @@ package com.projectx.messaging.controller;
 
 import jakarta.validation.Valid;
 import java.time.Duration;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,8 +13,8 @@ import org.springframework.http.MediaType;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
@@ -41,7 +43,7 @@ public class AIController {
 
   private static final Duration AI_TIMEOUT = Duration.ofSeconds(10);
   private static final AiReplyResponse FALLBACK =
-      new AiReplyResponse("Ask an open-ended, friendly follow-up question.", 0.0);
+      new AiReplyResponse("casual", List.of("Ask an open-ended, friendly follow-up question."));
 
   private final WebClient aiServiceClient;
   private final WebClient userServiceClient;
@@ -68,6 +70,7 @@ public class AIController {
    * @param request the request body containing the user's message
    * @return an {@link AiReplyResponse} with the suggestion and confidence score
    */
+  @CircuitBreaker(name = "aiService", fallbackMethod = "suggestReplyFallback")
   @PostMapping("/ai/reply")
   public AiReplyResponse suggestReply(
       @AuthenticationPrincipal Jwt jwt, @Valid @RequestBody AiReplyRequest request) {
@@ -76,13 +79,15 @@ public class AIController {
     String sanitizedMessage = sanitize(request.message());
     String aiContext = fetchAiContext(userId, jwt);
 
-    // Build the combined conversation context
-    String conversationContext = buildConversationContext(sanitizedMessage, aiContext);
-
-    return callAiService(conversationContext);
+    return callAiService(sanitizedMessage, aiContext);
   }
 
   // ── private helpers ──────────────────────────────────────────────────────────
+
+  public AiReplyResponse suggestReplyFallback(Jwt jwt, AiReplyRequest request, Throwable t) {
+      log.warn("AI service call failed, returning fallback. Error: {}", t.getMessage());
+      return FALLBACK;
+  }
 
   private String fetchAiContext(String userId, Jwt jwt) {
     try {
@@ -103,13 +108,13 @@ public class AIController {
     }
   }
 
-  private AiReplyResponse callAiService(String conversationContext) {
+  private AiReplyResponse callAiService(String message, String context) {
     try {
       Map<?, ?> aiResponse =
           aiServiceClient
               .post()
-              .uri("/api/ai/reply-suggestion")
-              .bodyValue(Map.of("conversation_context", conversationContext))
+              .uri("/ai/reply-suggestion")
+              .bodyValue(Map.of("message", message, "context", context))
               .retrieve()
               .bodyToMono(Map.class)
               .timeout(AI_TIMEOUT)
@@ -119,10 +124,14 @@ public class AIController {
         return FALLBACK;
       }
 
-      Object rawSuggestion = aiResponse.get("suggestion");
-      String suggestion = (rawSuggestion != null) ? String.valueOf(rawSuggestion) : FALLBACK.suggestion();
-      double score = parseScore(aiResponse.get("score"));
-      return new AiReplyResponse(suggestion, score);
+      Object rawSuggestions = aiResponse.get("suggestions");
+      Object rawTone = aiResponse.get("tone");
+      
+      List<String> suggestions = (rawSuggestions instanceof List) ? 
+          ((List<?>) rawSuggestions).stream().map(String::valueOf).toList() : FALLBACK.suggestions();
+      String tone = (rawTone != null) ? String.valueOf(rawTone) : FALLBACK.tone();
+      
+      return new AiReplyResponse(tone, suggestions);
 
     } catch (WebClientResponseException ex) {
       log.error("AI service returned error {}: {}", ex.getStatusCode(), ex.getMessage());
@@ -134,13 +143,6 @@ public class AIController {
       log.error("AI service call failed: {}", ex.getMessage());
       return FALLBACK;
     }
-  }
-
-  private static String buildConversationContext(String message, String aiContext) {
-    if (aiContext == null || aiContext.isBlank()) {
-      return message;
-    }
-    return aiContext + " Current message: " + message;
   }
 
   private static String resolveUserId(Jwt jwt) {
@@ -167,17 +169,6 @@ public class AIController {
     }
     // Remove non-printable control characters (keep newlines for multi-line messages)
     return input.strip().replaceAll("[\\p{Cntrl}&&[^\n\r\t]]", "");
-  }
-
-  private static double parseScore(Object raw) {
-    if (raw instanceof Number n) {
-      return n.doubleValue();
-    }
-    try {
-      return Double.parseDouble(String.valueOf(raw));
-    } catch (NumberFormatException e) {
-      return 0.0;
-    }
   }
 
   /** Minimal DTO for deserialising the user-service AI context response. */
