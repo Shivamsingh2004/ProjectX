@@ -1,113 +1,109 @@
-import json
+"""Utility helpers for the AI service: sanitisation and Redis response caching."""
+
+import hashlib
 import logging
+import os
+import re
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, field_validator
-
-from ai_service import generate_reply
-from utils import (
-    build_cache_key,
-    get_cached_response,
-    sanitize_context,
-    sanitize_message,
-    set_cached_response,
-)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="AI Service", version="2.0.0")
+# ---------------------------------------------------------------------------
+# Sanitisation helpers
+# ---------------------------------------------------------------------------
+
+_MAX_MESSAGE_LENGTH = 1000
+_MAX_CONTEXT_LENGTH = 500
+
+_DANGEROUS_PATTERNS = re.compile(
+    r"(system\s*:|assistant\s*:|<\|im_start\|>|<\|im_end\|>|\[INST\]|\[/INST\])",
+    re.IGNORECASE,
+)
+
+
+def sanitize_text(text: str, max_length: int) -> str:
+    if not text:
+        return ""
+
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    text = _DANGEROUS_PATTERNS.sub("", text)
+    text = text.strip()
+
+    if len(text) > max_length:
+        logger.warning("Input truncated from %d to %d", len(text), max_length)
+        text = text[:max_length]
+
+    return text
+
+
+def sanitize_message(message: str) -> str:
+    return sanitize_text(message, _MAX_MESSAGE_LENGTH)
+
+
+def sanitize_context(context: str) -> str:
+    return sanitize_text(context, _MAX_CONTEXT_LENGTH)
+
+
+def sanitize_input(text: Optional[str]) -> Optional[str]:
+    if text is None:
+        return None
+    return sanitize_text(text, max(len(text), 1))
 
 
 # ---------------------------------------------------------------------------
-# Request / Response models
+# Redis caching helpers
 # ---------------------------------------------------------------------------
 
-class ReplySuggestionRequest(BaseModel):
-    """Legacy endpoint request — kept for backwards compatibility."""
-    conversation_context: str
+_redis_client = None
+CACHE_TTL = int(os.getenv("AI_CACHE_TTL", "600"))
 
 
-class ProfileAnalysisRequest(BaseModel):
-    profile_text: str
+def _get_redis():
+    global _redis_client
+
+    if _redis_client is not None:
+        return _redis_client
+
+    try:
+        import redis
+
+        _redis_client = redis.Redis(
+            host=os.getenv("REDIS_HOST", "localhost"),
+            port=int(os.getenv("REDIS_PORT", "6379")),
+            password=os.getenv("REDIS_PASSWORD") or None,
+            decode_responses=True,
+            socket_connect_timeout=2,
+        )
+        _redis_client.ping()
+        logger.info("Redis connected")
+    except Exception as exc:
+        logger.warning("Redis unavailable: %s", exc)
+        _redis_client = None
+
+    return _redis_client
 
 
-class AiReplySuggestionRequest(BaseModel):
-    message: str = Field(..., min_length=1, max_length=1000)
-    context: Optional[str] = Field(None, max_length=500)
-
-    @field_validator("message")
-    @classmethod
-    def message_not_blank(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("message must not be blank")
-        return v
+def build_cache_key(message: str, context: str) -> str:
+    raw = f"{message.strip().lower()}::{context.strip().lower()}"
+    return "ai:reply:" + hashlib.sha256(raw.encode()).hexdigest()
 
 
-class AiReplySuggestionResponse(BaseModel):
-    suggestions: list[str]
+def get_cached_response(key: str) -> Optional[str]:
+    try:
+        client = _get_redis()
+        if not client:
+            return None
+        return client.get(key)
+    except Exception as exc:
+        logger.warning("Redis GET failed: %s", exc)
+        return None
 
 
-# ---------------------------------------------------------------------------
-# Legacy endpoints (unchanged behaviour)
-# ---------------------------------------------------------------------------
-
-@app.post("/api/ai/reply-suggestion")
-def reply_suggestion(payload: ReplySuggestionRequest):
-    context = payload.conversation_context.strip()
-    suggestion = "Ask an open-ended, friendly follow-up question." if context else "Start with a warm introduction."
-    return {"suggestion": suggestion, "score": 0.82}
-
-
-@app.post("/api/ai/profile-analysis")
-def profile_analysis(payload: ProfileAnalysisRequest):
-    score = min(max(len(payload.profile_text) / 200, 0.2), 0.95)
-    return {
-        "score": round(score, 2),
-        "improvements": [
-            "Add one concrete hobby.",
-            "Use a clearer profile photo description.",
-            "Mention what kind of connection you want."
-        ]
-    }
-
-
-# ---------------------------------------------------------------------------
-# New AI reply-suggestion endpoint (tone-aware, cached)
-# ---------------------------------------------------------------------------
-
-@app.post("/ai/reply-suggestion", response_model=AiReplySuggestionResponse)
-def ai_reply_suggestion(payload: AiReplySuggestionRequest):
-    """Generate 3 tone-aware reply suggestions using the NVIDIA AI API.
-
-    Responses are cached in Redis (TTL 10 min) keyed by message + context hash.
-    """
-    message = sanitize_message(payload.message)
-    context = sanitize_context(payload.context or "")
-
-    logger.info("POST /ai/reply-suggestion — message length=%d", len(message))
-
-    # Check cache first
-    cache_key = build_cache_key(message, context)
-    cached = get_cached_response(cache_key)
-    if cached:
-        try:
-            data = json.loads(cached)
-            if isinstance(data, list):
-                return AiReplySuggestionResponse(suggestions=data)
-        except (json.JSONDecodeError, TypeError):
-            logger.warning("Corrupted cache entry — regenerating")
-
-    suggestions = generate_reply(message, context if context else None)
-    if not suggestions:
-        logger.error("generate_reply returned an empty list.")
-        raise HTTPException(status_code=500, detail="Failed to generate suggestions.")
-
-    # Cache the result
-    set_cached_response(cache_key, json.dumps(suggestions))
-
-    return AiReplySuggestionResponse(suggestions=suggestions)
+def set_cached_response(key: str, value: str) -> None:
+    try:
+        client = _get_redis()
+        if not client:
+            return
+        client.setex(key, CACHE_TTL, value)
+    except Exception as exc:
+        logger.warning("Redis SET failed: %s", exc)
