@@ -1,244 +1,109 @@
-"""Production-ready FastAPI entry point for the AI service.
+"""Utility helpers for the AI service: sanitisation and Redis response caching."""
 
-Features
---------
-* POST /ai/reply-suggestion  – main AI endpoint
-* Pydantic request/response models with field validation
-* Per-IP rate limiting: 10 requests / minute (slowapi)
-* Structured logging with unique request IDs
-* Global exception handlers (validation, rate-limit, generic)
-* Async endpoint with non-blocking generate_reply call
-* Input sanitization and payload size limit (32 KB)
-"""
-
-import asyncio
+import hashlib
 import logging
-import time
-import uuid
-from contextlib import asynccontextmanager
+import os
+import re
 from typing import Optional
 
-from fastapi import FastAPI, Request, status
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator
-from slowapi import Limiter
-from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
-from starlette.middleware.base import BaseHTTPMiddleware
-
-from ai_service import generate_reply
-from utils import sanitize_context, sanitize_message
-
-# ── Logging ───────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s %(message)s",
-)
 logger = logging.getLogger(__name__)
 
-# ── Rate limiter ──────────────────────────────────────────────────────────────
-limiter = Limiter(key_func=get_remote_address, default_limits=["10/minute"])
+# ---------------------------------------------------------------------------
+# Sanitisation helpers
+# ---------------------------------------------------------------------------
 
-# ── App lifecycle ─────────────────────────────────────────────────────────────
+_MAX_MESSAGE_LENGTH = 1000
+_MAX_CONTEXT_LENGTH = 500
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):  # noqa: ARG001
-    logger.info("event=startup service=ai-service")
-    yield
-    logger.info("event=shutdown service=ai-service")
-
-
-# ── FastAPI app ───────────────────────────────────────────────────────────────
-app = FastAPI(
-    title="AI Service",
-    version="2.0.0",
-    lifespan=lifespan,
+_DANGEROUS_PATTERNS = re.compile(
+    r"(system\s*:|assistant\s*:|<\|im_start\|>|<\|im_end\|>|\[INST\]|\[/INST\])",
+    re.IGNORECASE,
 )
-app.state.limiter = limiter
 
 
-# ── Request ID + timing middleware ────────────────────────────────────────────
-class RequestLoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        request_id = str(uuid.uuid4())
-        request.state.request_id = request_id
-        start = time.perf_counter()
+def sanitize_text(text: str, max_length: int) -> str:
+    if not text:
+        return ""
 
-        logger.info(
-            "request_received request_id=%s method=%s path=%s",
-            request_id,
-            request.method,
-            request.url.path,
-        )
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    text = _DANGEROUS_PATTERNS.sub("", text)
+    text = text.strip()
 
-        response = await call_next(request)
-        elapsed_ms = (time.perf_counter() - start) * 1000
+    if len(text) > max_length:
+        logger.warning("Input truncated from %d to %d", len(text), max_length)
+        text = text[:max_length]
 
-        logger.info(
-            "request_completed request_id=%s status=%d duration_ms=%.2f",
-            request_id,
-            response.status_code,
-            elapsed_ms,
-        )
-        response.headers["X-Request-ID"] = request_id
-        return response
+    return text
 
 
-app.add_middleware(RequestLoggingMiddleware)
-
-# ── Payload size limit (32 KB) ────────────────────────────────────────────────
-MAX_BODY_SIZE = 32_768  # bytes
+def sanitize_message(message: str) -> str:
+    return sanitize_text(message, _MAX_MESSAGE_LENGTH)
 
 
-@app.middleware("http")
-async def limit_body_size(request: Request, call_next):
-    content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > MAX_BODY_SIZE:
-        request_id = getattr(request.state, "request_id", "unknown")
-        logger.warning("payload_too_large request_id=%s", request_id)
-        return JSONResponse(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            content={
-                "success": False,
-                "data": None,
-                "error": {
-                    "code": "PAYLOAD_TOO_LARGE",
-                    "message": "Request body exceeds the 32 KB limit.",
-                },
-            },
-        )
-    return await call_next(request)
+def sanitize_context(context: str) -> str:
+    return sanitize_text(context, _MAX_CONTEXT_LENGTH)
 
 
-# ── Pydantic models ───────────────────────────────────────────────────────────
-class ReplySuggestionRequest(BaseModel):
-    message: str
-    context: Optional[str] = None
-
-    @field_validator("message")
-    @classmethod
-    def message_not_empty(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("message must not be empty")
-        if len(v) > 2_000:
-            raise ValueError("message must not exceed 2000 characters")
-        return v
-
-    @field_validator("context")
-    @classmethod
-    def context_max_length(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and len(v) > 5_000:
-            raise ValueError("context must not exceed 5000 characters")
-        return v
+def sanitize_input(text: Optional[str]) -> Optional[str]:
+    if text is None:
+        return None
+    return sanitize_text(text, max(len(text), 1))
 
 
-class ErrorDetail(BaseModel):
-    code: str
-    message: str
+# ---------------------------------------------------------------------------
+# Redis caching helpers
+# ---------------------------------------------------------------------------
+
+_redis_client = None
+CACHE_TTL = int(os.getenv("AI_CACHE_TTL", "600"))
 
 
-class ReplySuggestionData(BaseModel):
-    suggestions: list[str]
+def _get_redis():
+    global _redis_client
 
-
-class ReplySuggestionResponse(BaseModel):
-    success: bool
-    data: Optional[ReplySuggestionData] = None
-    error: Optional[ErrorDetail] = None
-
-
-# ── Exception handlers ────────────────────────────────────────────────────────
-@app.exception_handler(RateLimitExceeded)
-async def rate_limit_handler(request: Request, exc: RateLimitExceeded):  # noqa: ARG001
-    request_id = getattr(request.state, "request_id", "unknown")
-    logger.warning(
-        "rate_limit_exceeded request_id=%s ip=%s",
-        request_id,
-        get_remote_address(request),
-    )
-    return JSONResponse(
-        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-        content={
-            "success": False,
-            "data": None,
-            "error": {
-                "code": "RATE_LIMIT_EXCEEDED",
-                "message": "Too many requests. Limit is 10 per minute.",
-            },
-        },
-    )
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_error_handler(request: Request, exc: RequestValidationError):
-    request_id = getattr(request.state, "request_id", "unknown")
-    messages = "; ".join(
-        f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}"
-        for err in exc.errors()
-    )
-    logger.warning("validation_error request_id=%s errors=%s", request_id, messages)
-    return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={
-            "success": False,
-            "data": None,
-            "error": {"code": "INVALID_REQUEST", "message": messages},
-        },
-    )
-
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):  # noqa: ARG001
-    request_id = getattr(request.state, "request_id", "unknown")
-    logger.exception("unhandled_error request_id=%s", request_id)
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={
-            "success": False,
-            "data": None,
-            "error": {
-                "code": "INTERNAL_ERROR",
-                "message": "An unexpected error occurred.",
-            },
-        },
-    )
-
-
-# ── Endpoint ──────────────────────────────────────────────────────────────────
-@app.post("/ai/reply-suggestion", response_model=ReplySuggestionResponse)
-@limiter.limit("10/minute")
-async def reply_suggestion(request: Request, payload: ReplySuggestionRequest):
-    """Generate AI reply suggestions for a given message."""
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    logger.info("reply_suggestion_start request_id=%s", request_id)
-
-    message = sanitize_message(payload.message)
-    context = sanitize_context(payload.context) if payload.context else None
+    if _redis_client is not None:
+        return _redis_client
 
     try:
-        # generate_reply uses a synchronous streaming HTTP call; run it in a
-        # thread-pool so we don't block the async event loop.
-        suggestions = await asyncio.to_thread(generate_reply, message, context)
-    except Exception:
-        logger.exception("generate_reply_failed request_id=%s", request_id)
-        return ReplySuggestionResponse(
-            success=False,
-            data=None,
-            error=ErrorDetail(
-                code="AI_SERVICE_ERROR",
-                message="Failed to generate reply suggestions.",
-            ),
-        )
+        import redis
 
-    logger.info(
-        "reply_suggestion_done request_id=%s suggestion_count=%d",
-        request_id,
-        len(suggestions),
-    )
-    return ReplySuggestionResponse(
-        success=True,
-        data=ReplySuggestionData(suggestions=suggestions),
-        error=None,
-    )
+        _redis_client = redis.Redis(
+            host=os.getenv("REDIS_HOST", "localhost"),
+            port=int(os.getenv("REDIS_PORT", "6379")),
+            password=os.getenv("REDIS_PASSWORD") or None,
+            decode_responses=True,
+            socket_connect_timeout=2,
+        )
+        _redis_client.ping()
+        logger.info("Redis connected")
+    except Exception as exc:
+        logger.warning("Redis unavailable: %s", exc)
+        _redis_client = None
+
+    return _redis_client
+
+
+def build_cache_key(message: str, context: str) -> str:
+    raw = f"{message.strip().lower()}::{context.strip().lower()}"
+    return "ai:reply:" + hashlib.sha256(raw.encode()).hexdigest()
+
+
+def get_cached_response(key: str) -> Optional[str]:
+    try:
+        client = _get_redis()
+        if not client:
+            return None
+        return client.get(key)
+    except Exception as exc:
+        logger.warning("Redis GET failed: %s", exc)
+        return None
+
+
+def set_cached_response(key: str, value: str) -> None:
+    try:
+        client = _get_redis()
+        if not client:
+            return
+        client.setex(key, CACHE_TTL, value)
+    except Exception as exc:
+        logger.warning("Redis SET failed: %s", exc)

@@ -2,6 +2,7 @@ package com.projectx.user;
 
 import jakarta.validation.Valid;
 import java.util.List;
+import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -57,6 +58,22 @@ public class UserController {
     return new AiContextResponse(userId, userService.buildAIContext(userId));
   }
 
+  /**
+   * Returns a map of all personalization fields (interests, preferences, traits, behavior)
+   * for the given userId.
+   *
+   * <p>Access is restricted: the authenticated user may only request their own preferences.
+   */
+  @GetMapping("/{userId}/preferences")
+  public Map<String, List<String>> getUserPreferences(
+      @AuthenticationPrincipal Jwt jwt, @PathVariable String userId) {
+    String authenticatedId = resolveUserId(jwt);
+    if (!authenticatedId.equals(userId)) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
+    }
+    return userService.getUserPreferencesMap(userId);
+  }
+
   // ── helpers ─────────────────────────────────────────────────────────────────
 
   private static String resolveUserId(Jwt jwt) {
@@ -67,4 +84,3 @@ public class UserController {
     return (sub != null && !sub.isBlank()) ? sub : "default";
   }
 }
-

@@ -37,6 +37,57 @@ _FALLBACK_SUGGESTIONS = [
     "Haven't thought about it that way — what's your vibe?",
 ]
 
+# Tone-specific fallbacks used when the LLM is unavailable
+_TONE_FALLBACKS = {
+    "funny": [
+        "Okay, that's genuinely hilarious 😂 — you're officially my favorite human today.",
+        "Ngl, I wasn't expecting that but I'm here for it 👀",
+        "Plot twist: I was NOT ready for this convo to go this direction lol",
+    ],
+    "flirty": [
+        "Okay so… you can't just say that and not expect me to smile 😊",
+        "Not me lowkey blushing reading this 👀",
+        "You're dangerous and I think I'm okay with that 😏",
+    ],
+    "serious": [
+        "That really resonates with me — I feel the same way honestly.",
+        "I appreciate you sharing that, it takes guts to be this real.",
+        "Totally get it. What do you think would make it better?",
+    ],
+    "casual": [
+        "Haha right?? Same vibes honestly 😂",
+        "Ugh yes, couldn't have said it better",
+        "Okay wait that's so relatable lol",
+    ],
+}
+
+
+def detect_tone(message: str) -> str:
+    """Detect conversational tone from message text.
+
+    Returns one of: funny, flirty, serious, casual.
+    """
+    msg = message.lower()
+
+    funny_signals = ["lol", "lmao", "haha", "��", "🤣", "joke", "funny", "hilarious", "tbh", "ngl"]
+    flirty_signals = ["cute", "pretty", "handsome", "miss you", "😏", "😘", "wink", "crush", "like you"]
+    serious_signals = [
+        "feel", "think", "believe", "honestly", "actually", "important", "relationship",
+        "future", "serious", "life", "career", "family",
+    ]
+
+    funny_score = sum(1 for s in funny_signals if s in msg)
+    flirty_score = sum(1 for s in flirty_signals if s in msg)
+    serious_score = sum(1 for s in serious_signals if s in msg)
+
+    if flirty_score > funny_score and flirty_score > serious_score:
+        return "flirty"
+    if funny_score > serious_score:
+        return "funny"
+    if serious_score >= 2:
+        return "serious"
+    return "casual"
+
 
 def _build_client() -> OpenAI:
     if not NVIDIA_API_KEY:
@@ -47,8 +98,34 @@ def _build_client() -> OpenAI:
     return OpenAI(base_url=NVIDIA_API_BASE, api_key=NVIDIA_API_KEY)
 
 
-def _build_user_prompt(message: str, context: Optional[str]) -> str:
-    parts = [f'Message: "{message}"']
+def _build_user_prompt(message: str, context: Optional[str], tone: str) -> str:
+    """Build an LLM prompt tailored to the detected tone and user context.
+
+    Args:
+        message: The message to reply to (already sanitized).
+        context: Optional plain-text AI context string for the user (e.g. from UserService).
+        tone: Detected tone — one of "funny", "flirty", "serious", "casual".
+    """
+    tone_instructions = {
+        "funny": (
+            "Be witty and playful. Use light humor, Gen-Z slang (ngl, lowkey, no cap), and "
+            "relevant emojis. Keep it fun but genuine — avoid forced jokes."
+        ),
+        "flirty": (
+            "Be warm, charming, and subtly flirty. Compliment naturally, show genuine interest, "
+            "use a light teasing tone. Add a few well-placed emojis 😊. Keep it classy."
+        ),
+        "serious": (
+            "Be thoughtful, empathetic, and direct. Show you truly understand their point. "
+            "Ask a meaningful follow-up question. No fluff, no filler."
+        ),
+        "casual": (
+            "Keep it chill and relatable. Sound like a real human texting a friend — "
+            "conversational, natural, Gen-Z energy. Short sentences are fine."
+        ),
+    }
+    style = tone_instructions.get(tone, tone_instructions["casual"])
+    parts = [f'Tone: {tone}', f'Style: {style}', f'Message: "{message}"']
     if context:
         parts.append(f"Context about the user: {context}")
     parts.append(
@@ -59,11 +136,7 @@ def _build_user_prompt(message: str, context: Optional[str]) -> str:
 
 
 def _parse_suggestions(raw: str) -> list[str]:
-    """Extract the JSON array from *raw*, returning a list of suggestion strings.
-
-    Tries a few strategies to handle responses that wrap the array in prose or
-    markdown code fences.
-    """
+    """Extract the JSON array from *raw*, returning a list of suggestion strings."""
     raw = raw.strip()
 
     # 1. Direct parse
@@ -103,10 +176,10 @@ def _parse_suggestions(raw: str) -> list[str]:
 def generate_reply(
     message: str, context: Optional[str] = None
 ) -> list[str]:
-    """Generate 3 reply suggestions for *message* using the NVIDIA AI API.
+    """Generate 3 tone-aware reply suggestions for *message* using the NVIDIA AI API.
 
     Uses streaming to accumulate the full response, then parses the JSON array.
-    Falls back to generic suggestions if parsing fails or an API error occurs.
+    Falls back to tone-specific suggestions if parsing fails or an API error occurs.
     """
     message = sanitize_message(message)
     if context:
@@ -116,15 +189,18 @@ def generate_reply(
         logger.warning("Empty message received; returning fallback suggestions.")
         return _FALLBACK_SUGGESTIONS[:]
 
+    tone = detect_tone(message)
+    fallbacks = _TONE_FALLBACKS.get(tone, _FALLBACK_SUGGESTIONS)
+
     try:
         client = _build_client()
     except RuntimeError as exc:
         logger.error("Client configuration error: %s", exc)
-        return _FALLBACK_SUGGESTIONS[:]
+        return fallbacks[:]
 
-    user_prompt = _build_user_prompt(message, context)
+    user_prompt = _build_user_prompt(message, context, tone)
 
-    logger.info("Sending request to NVIDIA API. model=%s", NVIDIA_MODEL)
+    logger.info("Sending request to NVIDIA API. model=%s tone=%s", NVIDIA_MODEL, tone)
     accumulated = ""
     try:
         stream = client.chat.completions.create(
@@ -143,19 +219,19 @@ def generate_reply(
                 accumulated += delta.content
     except OpenAIError as exc:
         logger.error("NVIDIA API error: %s", exc)
-        return _FALLBACK_SUGGESTIONS[:]
+        return fallbacks[:]
     except Exception as exc:  # noqa: BLE001
         logger.error("Unexpected error calling NVIDIA API: %s", exc)
-        return _FALLBACK_SUGGESTIONS[:]
+        return fallbacks[:]
 
     if not accumulated.strip():
         logger.warning("Empty response from NVIDIA API; returning fallback.")
-        return _FALLBACK_SUGGESTIONS[:]
+        return fallbacks[:]
 
     suggestions = _parse_suggestions(accumulated)
     if len(suggestions) < 3:
         # Pad with fallbacks to always return 3 suggestions
-        suggestions.extend(_FALLBACK_SUGGESTIONS[:3 - len(suggestions)])
+        suggestions.extend(fallbacks[:3 - len(suggestions)])
 
-    logger.info("Generated %d suggestion(s).", len(suggestions))
+    logger.info("Generated %d suggestion(s) with tone=%s.", len(suggestions), tone)
     return suggestions

@@ -58,6 +58,21 @@ public class UserService {
   }
 
   /**
+   * Returns a map of all personalization fields for the given user.
+   *
+   * @throws ResponseStatusException 404 when the user is not found
+   */
+  public Map<String, List<String>> getUserPreferencesMap(String userId) {
+    UserProfile profile = getUserProfile(userId);
+    return Map.of(
+        "interests", profile.interests() != null ? profile.interests() : List.of(),
+        "preferences", profile.preferences() != null ? profile.preferences() : List.of(),
+        "personalityTraits", profile.personalityTraits() != null ? profile.personalityTraits() : List.of(),
+        "activityBehavior", profile.activityBehavior() != null ? profile.activityBehavior() : List.of()
+    );
+  }
+
+  /**
    * Persists (or replaces) the profile for the given user and returns it.
    */
   public UserProfile saveUserProfile(String userId, UserProfile profile) {
