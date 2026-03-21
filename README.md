@@ -58,7 +58,7 @@ Create `frontend/.env.local` (or use your preferred env tooling):
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8080
 NEXT_PUBLIC_SOCKET_URL=http://localhost:8080
 NEXT_PUBLIC_SUPABASE_URL=https://<your-project-ref>.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=<your-anon-key>
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key_here
 ```
 
 ### Backend (Spring Boot)
@@ -94,7 +94,7 @@ Use Docker Compose for PostgreSQL, Redis, and Kafka. The DB schema is mounted fr
 
 ## Tests & Linting
 - Frontend: `npm run lint`, `npm run build`
-- AI service: `python -m py_compile main.py`
+- AI service: `python -m py_compile main.py` (no automated test suite yet)
 - Backend: `mvn test` (or `mvn clean compile` for a compile-only check)
 
 ## Docs
