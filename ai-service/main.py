@@ -11,6 +11,7 @@ Features
 * Input sanitization and payload size limit (32 KB)
 """
 
+import asyncio
 import logging
 import time
 import uuid
@@ -27,7 +28,7 @@ from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from ai_service import generate_reply
-from utils import sanitize_input
+from utils import sanitize_context, sanitize_message
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -213,11 +214,13 @@ async def reply_suggestion(request: Request, payload: ReplySuggestionRequest):
     request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     logger.info("reply_suggestion_start request_id=%s", request_id)
 
-    message = sanitize_input(payload.message)
-    context = sanitize_input(payload.context)
+    message = sanitize_message(payload.message)
+    context = sanitize_context(payload.context) if payload.context else None
 
     try:
-        suggestions = await generate_reply(message, context)
+        # generate_reply uses a synchronous streaming HTTP call; run it in a
+        # thread-pool so we don't block the async event loop.
+        suggestions = await asyncio.to_thread(generate_reply, message, context)
     except Exception:
         logger.exception("generate_reply_failed request_id=%s", request_id)
         return ReplySuggestionResponse(

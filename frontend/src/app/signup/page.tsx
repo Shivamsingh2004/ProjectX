@@ -2,7 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
-import { api } from "@/services/api";
+import { createClient } from "@/utils/supabase/client";
 
 export default function Page() {
   const router = useRouter();
@@ -15,14 +15,15 @@ export default function Page() {
     event.preventDefault();
     setError(null);
     setLoading(true);
-    try {
-      await api.post("/api/auth/register", { email, password, fullName: "New User" });
-      router.push("/onboarding");
-    } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "Unable to sign up");
-    } finally {
+    const supabase = createClient();
+    const { error: authError } = await supabase.auth.signUp({ email, password });
+    if (authError) {
+      setError(authError.message);
       setLoading(false);
+      return;
     }
+    router.push("/onboarding");
+    router.refresh();
   };
 
   return (
