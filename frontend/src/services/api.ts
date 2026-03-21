@@ -1,4 +1,5 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from "axios";
+import { createClient } from "@/utils/supabase/client";
 
 // ---------------------------------------------------------------------------
 // Fallback suggestions shown when the AI service is unavailable
@@ -19,17 +20,17 @@ export type ApiError = { success: false; message: string };
 // ---------------------------------------------------------------------------
 export const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080",
-  timeout: 10_000,
+  timeout: 15_000,
 });
 
-// Attach JWT token from localStorage (client-side only)
-api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-  if (typeof window !== "undefined") {
-    const token = localStorage.getItem("token");
-    if (token) {
-      config.headers = config.headers ?? {};
-      config.headers.Authorization = `Bearer ${token}`;
-    }
+// Attach Supabase JWT to every request
+api.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
+  const supabase = createClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (session?.access_token) {
+    config.headers.Authorization = `Bearer ${session.access_token}`;
   }
   return config;
 });
