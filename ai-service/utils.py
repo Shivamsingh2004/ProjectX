@@ -1,11 +1,60 @@
-"""Utility helpers: input sanitisation and Redis response caching."""
+"""Utility helpers for the AI service: sanitisation and Redis response caching."""
 
 import hashlib
 import logging
 import os
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Sanitisation helpers (guards against prompt injection)
+# ---------------------------------------------------------------------------
+
+_MAX_MESSAGE_LENGTH = 1000
+_MAX_CONTEXT_LENGTH = 500
+
+# Characters that could be used for prompt injection
+_DANGEROUS_PATTERNS = re.compile(
+    r"(system\s*:|assistant\s*:|<\|im_start\|>|<\|im_end\|>|\[INST\]|\[/INST\])",
+    re.IGNORECASE,
+)
+
+
+def sanitize_text(text: str, max_length: int) -> str:
+    """Strip whitespace, truncate to max_length, and remove prompt-injection patterns."""
+    if not text:
+        return ""
+    # Remove null bytes and control characters (keep newlines and tabs)
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    # Remove potential prompt-injection markers
+    text = _DANGEROUS_PATTERNS.sub("", text)
+    text = text.strip()
+    if len(text) > max_length:
+        logger.warning(
+            "Input text truncated from %d to %d characters.", len(text), max_length
+        )
+        text = text[:max_length]
+    return text
+
+
+def sanitize_message(message: str) -> str:
+    return sanitize_text(message, _MAX_MESSAGE_LENGTH)
+
+
+def sanitize_context(context: str) -> str:
+    return sanitize_text(context, _MAX_CONTEXT_LENGTH)
+
+
+# Legacy helper kept for backwards compatibility
+def sanitize_input(text: str, max_length: int = 2000) -> str:
+    return sanitize_text(text, max_length)
+
+
+# ---------------------------------------------------------------------------
+# Redis caching helpers
+# ---------------------------------------------------------------------------
 
 _redis_client = None
 
@@ -74,8 +123,3 @@ def set_cached_response(key: str, value: str) -> None:
         logger.debug("Cache SET key %s (TTL=%ds)", key, CACHE_TTL)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Redis SET failed: %s", exc)
-
-
-def sanitize_input(text: str, max_length: int = 2000) -> str:
-    """Strip whitespace and enforce a maximum length on user-supplied text."""
-    return text.strip()[:max_length]

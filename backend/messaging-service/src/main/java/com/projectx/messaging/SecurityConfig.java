@@ -1,6 +1,6 @@
-package com.projectx.auth;
+package com.projectx.messaging;
 
-import com.projectx.auth.security.JwtAuthFilter;
+import com.projectx.messaging.security.JwtAuthFilter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -32,7 +32,6 @@ public class SecurityConfig {
     NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwksUri).build();
 
     OAuth2TokenValidator<Jwt> issuerValidator = JwtValidators.createDefaultWithIssuer(issuer);
-    // Ensure the `sub` (user-id) claim is present
     OAuth2TokenValidator<Jwt> subValidator =
         new JwtClaimValidator<String>("sub", StringUtils::hasText);
 
@@ -48,13 +47,13 @@ public class SecurityConfig {
   @Bean
   SecurityFilterChain securityFilterChain(HttpSecurity http, JwtAuthFilter jwtAuthFilter)
       throws Exception {
-    http.csrf(csrf -> csrf.ignoringRequestMatchers("/api/auth/**", "/actuator/**"))
+    http.csrf(csrf -> csrf.ignoringRequestMatchers("/ws/**", "/actuator/**"))
         .cors(Customizer.withDefaults())
         .sessionManagement(
             session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
         .authorizeHttpRequests(
             auth ->
-                auth.requestMatchers("/api/auth/**", "/actuator/**")
+                auth.requestMatchers("/ws/**", "/actuator/**")
                     .permitAll()
                     .anyRequest()
                     .authenticated())

@@ -3,101 +3,127 @@ package com.projectx.user;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicReference;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 /**
- * User intelligence layer: stores profile, preferences, personality traits,
- * and builds AI context strings consumed by the AI service.
+ * Personalization engine for managing per-user profiles and building structured AI context.
+ *
+ * <p>Data is currently held in-memory (ConcurrentHashMap keyed by userId). A production deployment
+ * should swap this for a database-backed repository.
  */
 @Service
 public class UserService {
 
-  // In-memory store keyed by userId. A real implementation would use a database.
-  private final Map<String, AtomicReference<UserProfile>> profiles = new ConcurrentHashMap<>();
-  private final String DEFAULT_USER_ID = "default";
+  private final Map<String, UserProfile> store = new ConcurrentHashMap<>();
 
-  public UserService() {
-    // Seed a default profile
-    profiles.put(DEFAULT_USER_ID, new AtomicReference<>(new UserProfile(
-        "New User",
-        "Just here to meet awesome people.",
-        List.of("gym", "travel", "music"),
-        List.of("serious relationship"),
-        List.of("outgoing", "funny", "adventurous"),
-        List.of()
-    )));
+  // ── Seeded demo profile ─────────────────────────────────────────────────────
+
+  {
+    store.put(
+        "default",
+        new UserProfile(
+            "New User",
+            "",
+            List.of("travel", "gym", "music"),
+            List.of("serious relationship"),
+            List.of("outgoing", "funny"),
+            List.of("active in evenings", "gym 3x/week"),
+            List.of()));
   }
 
+  // ── Public API ──────────────────────────────────────────────────────────────
+
   /**
-   * Return the full {@link UserProfile} for the given user.
-   * Returns a default profile when the user is not found.
+   * Returns the full profile for the given user.
+   *
+   * @throws ResponseStatusException 404 when the user is not found
    */
   public UserProfile getUserProfile(String userId) {
-    AtomicReference<UserProfile> ref = profiles.get(userId);
-    if (ref == null) {
-      ref = profiles.get(DEFAULT_USER_ID);
+    UserProfile profile = store.get(userId);
+    if (profile == null) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found: " + userId);
     }
-    return ref.get();
+    return profile;
   }
 
   /**
-   * Return just the preferences and personality traits for the given user.
+   * Returns only the dating preferences for the given user.
+   *
+   * @throws ResponseStatusException 404 when the user is not found
    */
-  public Map<String, List<String>> getUserPreferences(String userId) {
+  public List<String> getUserPreferences(String userId) {
+    return getUserProfile(userId).preferences();
+  }
+
+  /**
+   * Returns a map of all personalization fields for the given user.
+   *
+   * @throws ResponseStatusException 404 when the user is not found
+   */
+  public Map<String, List<String>> getUserPreferencesMap(String userId) {
     UserProfile profile = getUserProfile(userId);
     return Map.of(
         "interests", profile.interests(),
         "preferences", profile.preferences(),
-        "personalityTraits", profile.personalityTraits()
+        "personalityTraits", profile.personalityTraits(),
+        "activityBehavior", profile.activityBehavior()
     );
   }
 
   /**
-   * Build a plain-text AI context string from the user's profile data.
+   * Persists (or replaces) the profile for the given user and returns it.
+   */
+  public UserProfile saveUserProfile(String userId, UserProfile profile) {
+    store.put(userId, profile);
+    return profile;
+  }
+
+  /**
+   * Builds a structured natural-language AI context string from the user's profile data.
    *
-   * <p>Example output: {@code "User likes gym, travel, and music. Personality: outgoing and funny."}
+   * <p>Example output:
+   * "User likes travel, gym, and music. Personality: outgoing and funny. Prefers serious relationship."
+   *
+   * @throws ResponseStatusException 404 when the user is not found
    */
   public String buildAIContext(String userId) {
     UserProfile profile = getUserProfile(userId);
 
-    StringBuilder sb = new StringBuilder();
+    StringBuilder ctx = new StringBuilder();
 
-    List<String> interests = profile.interests();
-    if (!interests.isEmpty()) {
-      sb.append("User likes ").append(joinHuman(interests)).append(". ");
+    if (profile.interests() != null && !profile.interests().isEmpty()) {
+      ctx.append("User likes ").append(joinNatural(profile.interests())).append(". ");
     }
 
-    List<String> preferences = profile.preferences();
-    if (!preferences.isEmpty()) {
-      sb.append("Looking for ").append(joinHuman(preferences)).append(". ");
+    if (profile.personalityTraits() != null && !profile.personalityTraits().isEmpty()) {
+      ctx.append("Personality: ").append(joinNatural(profile.personalityTraits())).append(". ");
     }
 
-    List<String> traits = profile.personalityTraits();
-    if (!traits.isEmpty()) {
-      sb.append("Personality: ").append(joinHuman(traits)).append(".");
+    if (profile.preferences() != null && !profile.preferences().isEmpty()) {
+      ctx.append("Prefers ").append(joinNatural(profile.preferences())).append(". ");
     }
 
-    return sb.toString().trim();
+    if (profile.activityBehavior() != null && !profile.activityBehavior().isEmpty()) {
+      ctx.append("Activity: ").append(joinNatural(profile.activityBehavior())).append(".");
+    }
+
+    String result = ctx.toString().trim();
+    return result.isEmpty() ? "No personalization data available." : result;
   }
 
-  /**
-   * Store or update a profile for the given user.
-   */
-  public UserProfile saveProfile(String userId, UserProfile profile) {
-    profiles.computeIfAbsent(userId, k -> new AtomicReference<>()).set(profile);
-    return profile;
-  }
+  // ── Helpers ─────────────────────────────────────────────────────────────────
 
-  // -----------------------------------------------------------------------
-  // Helpers
-  // -----------------------------------------------------------------------
-
-  private static String joinHuman(List<String> items) {
-    if (items.isEmpty()) return "";
-    if (items.size() == 1) return items.get(0);
-    if (items.size() == 2) return items.get(0) + " and " + items.get(1);
-    String allButLast = String.join(", ", items.subList(0, items.size() - 1));
-    return allButLast + ", and " + items.get(items.size() - 1);
+  private static String joinNatural(List<String> items) {
+    if (items.size() == 1) {
+      return items.get(0);
+    }
+    if (items.size() == 2) {
+      return items.get(0) + " and " + items.get(1);
+    }
+    return String.join(", ", items.subList(0, items.size() - 1))
+        + ", and "
+        + items.get(items.size() - 1);
   }
 }

@@ -1,4 +1,5 @@
 import axios, { type InternalAxiosRequestConfig } from "axios";
+import { createClient } from "@/utils/supabase/client";
 
 interface RetryableConfig extends InternalAxiosRequestConfig {
   __retried?: boolean;
@@ -7,6 +8,18 @@ interface RetryableConfig extends InternalAxiosRequestConfig {
 export const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080",
   timeout: 15000,
+});
+
+// Attach Supabase JWT to every request
+api.interceptors.request.use(async (config) => {
+  const supabase = createClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (session?.access_token) {
+    config.headers.Authorization = `Bearer ${session.access_token}`;
+  }
+  return config;
 });
 
 api.interceptors.response.use(

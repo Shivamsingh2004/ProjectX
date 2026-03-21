@@ -5,5 +5,5 @@ spring:
     name: auth-service
 
 supabase:
-  jwks-uri: ${SUPABASE_JWKS_URI:}
-  issuer: ${SUPABASE_ISSUER:}
+  jwks-uri: ${SUPABASE_JWKS_URI:https://placeholder.supabase.co/auth/v1/.well-known/jwks.json}
+  issuer: ${SUPABASE_ISSUER:https://placeholder.supabase.co/auth/v1}

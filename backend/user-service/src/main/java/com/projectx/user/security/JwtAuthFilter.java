@@ -1,4 +1,4 @@
-package com.projectx.auth.security;
+package com.projectx.user.security;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -17,16 +17,11 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * Supabase JWT authentication filter.
+ * Supabase JWT authentication filter for the user-service.
  *
- * <p>Extracts the Bearer token from the Authorization header, validates it against Supabase's JWKS
- * endpoint (signature, expiration, issuer), and attaches the authenticated principal to the Spring
- * {@link org.springframework.security.core.context.SecurityContext}.
- *
- * <ul>
- *   <li>Missing token → passes through (downstream security rules enforce 401 on protected routes)
- *   <li>Invalid / expired / wrong-issuer token → 401 Unauthorized
- * </ul>
+ * <p>Validates Bearer tokens from the Authorization header using Supabase's JWKS endpoint and
+ * populates the {@link org.springframework.security.core.context.SecurityContext} with the
+ * authenticated principal.
  */
 public class JwtAuthFilter extends OncePerRequestFilter {
 
@@ -43,7 +38,6 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
     String token = extractBearerToken(request);
     if (!StringUtils.hasText(token)) {
-      // No token present – let the security filter chain decide whether the route requires auth
       filterChain.doFilter(request, response);
       return;
     }
@@ -61,8 +55,6 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
     filterChain.doFilter(request, response);
   }
-
-  // ── helpers ─────────────────────────────────────────────────────────────────
 
   private static String extractBearerToken(HttpServletRequest request) {
     String header = request.getHeader("Authorization");
