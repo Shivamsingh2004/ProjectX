@@ -171,22 +171,24 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
 
-  // WebSocket: subscribe to messages, typing, and read receipts
+  // WebSocket: subscribe to messages and typing indicator
   useEffect(() => {
     socket.connect();
 
-    socket.on("message", (msg: Message) => {
+    const onMessage = (msg: Message) => {
       setMessages((prev) => [...prev, msg]);
-    });
+    };
 
-    socket.on("typing", ({ typing }: { typing: boolean }) => {
+    const onTyping = ({ typing }: { typing: boolean }) => {
       setIsTyping(typing);
-    });
+    };
+
+    socket.on("message", onMessage);
+    socket.on("typing", onTyping);
 
     return () => {
-      socket.off("message");
-      socket.off("typing");
-      socket.disconnect();
+      socket.off("message", onMessage);
+      socket.off("typing", onTyping);
     };
   }, []);
 
@@ -270,7 +272,7 @@ export default function ChatPage() {
         );
         setLastMessage(trimmed);
       } catch {
-        // Mark as failed
+        // Mark as failed (keep "sent" state to indicate it didn't go through)
         setMessages((prev) =>
           prev.map((m) =>
             m.id === optimistic.id ? { ...m, status: "sent" } : m,
@@ -432,4 +434,3 @@ export default function ChatPage() {
     </div>
   );
 }
-
