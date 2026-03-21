@@ -1,0 +1,72 @@
+# ============================================================================
+# Kafka Event Schema (Avro) + Schema Registry Integration
+#
+# All events flowing through Kafka use Confluent Schema Registry for
+# backward-compatible schema evolution. Producers register schemas;
+# consumers validate on deserialization.
+# ============================================================================
+
+# analytics_event.avsc — Avro schema for the analytics-events topic
+{
+  "type": "record",
+  "name": "AnalyticsEvent",
+  "namespace": "com.projectx.events",
+  "doc": "Represents a user interaction event for analytics tracking",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "Unique event identifier (UUID)"
+    },
+    {
+      "name": "user_id",
+      "type": "string",
+      "doc": "Supabase user UUID"
+    },
+    {
+      "name": "event_type",
+      "type": {
+        "type": "enum",
+        "name": "EventType",
+        "symbols": [
+          "MESSAGE_SENT",
+          "MESSAGE_RECEIVED",
+          "AI_SUGGESTION_SHOWN",
+          "AI_SUGGESTION_ACCEPTED",
+          "AI_SUGGESTION_REJECTED",
+          "MATCH_CREATED",
+          "PROFILE_VIEW",
+          "PLATFORM_CONNECTED",
+          "PLATFORM_DISCONNECTED"
+        ]
+      }
+    },
+    {
+      "name": "platform",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Dating platform name (Tinder, Bumble, etc.)"
+    },
+    {
+      "name": "metadata",
+      "type": ["null", {
+        "type": "map",
+        "values": "string"
+      }],
+      "default": null,
+      "doc": "Arbitrary key-value pairs for event-specific data"
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "logicalType": "timestamp-millis",
+      "doc": "Event timestamp in epoch milliseconds"
+    },
+    {
+      "name": "schema_version",
+      "type": "int",
+      "default": 1,
+      "doc": "Schema version for backward compatibility tracking"
+    }
+  ]
+}

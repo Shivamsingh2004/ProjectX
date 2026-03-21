@@ -1,0 +1,172 @@
+# ============================================================================
+# Golden Signals: Standardized Observability Across All Services
+#
+# Implements the 4 Google SRE golden signals (Latency, Errors, Traffic,
+# Saturation) tied directly to per-service SLOs.
+# ============================================================================
+groups:
+  # ── LATENCY ────────────────────────────────────────────────────────────────
+  - name: golden.latency
+    interval: 15s
+    rules:
+      # Per-service P50, P90, P95, P99
+      - record: golden:latency:p50
+        expr: |
+          histogram_quantile(0.50,
+            sum by (job, le)(rate(http_server_requests_seconds_bucket[5m]))
+          )
+      - record: golden:latency:p90
+        expr: |
+          histogram_quantile(0.90,
+            sum by (job, le)(rate(http_server_requests_seconds_bucket[5m]))
+          )
+      - record: golden:latency:p95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (job, le)(rate(http_server_requests_seconds_bucket[5m]))
+          )
+      - record: golden:latency:p99
+        expr: |
+          histogram_quantile(0.99,
+            sum by (job, le)(rate(http_server_requests_seconds_bucket[5m]))
+          )
+
+      # Latency by endpoint (for hotspot detection)
+      - record: golden:latency:p99_by_endpoint
+        expr: |
+          histogram_quantile(0.99,
+            sum by (job, uri, le)(rate(http_server_requests_seconds_bucket[5m]))
+          )
+
+  # ── ERRORS ─────────────────────────────────────────────────────────────────
+  - name: golden.errors
+    interval: 15s
+    rules:
+      # Error rate (5xx) per service
+      - record: golden:errors:rate5m
+        expr: |
+          sum by (job)(rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+          / clamp_min(sum by (job)(rate(http_server_requests_seconds_count[5m])), 0.001)
+
+      # Error rate by status code family
+      - record: golden:errors:by_code
+        expr: |
+          sum by (job, status)(rate(http_server_requests_seconds_count{status=~"[45].."}[5m]))
+
+      # AI-specific: fallback rate
+      - record: golden:errors:ai_fallback_rate
+        expr: |
+          sum(rate(ai_service_fallback_total[5m]))
+          / clamp_min(sum(rate(ai_service_requests_total[5m])), 0.001)
+
+  # ── TRAFFIC ────────────────────────────────────────────────────────────────
+  - name: golden.traffic
+    interval: 15s
+    rules:
+      # Request rate per service
+      - record: golden:traffic:rps
+        expr: sum by (job)(rate(http_server_requests_seconds_count[1m]))
+
+      # Request rate by method and endpoint
+      - record: golden:traffic:rps_by_endpoint
+        expr: |
+          sum by (job, method, uri)(rate(http_server_requests_seconds_count[1m]))
+
+      # Kafka consumer lag (event processing backlog)
+      - record: golden:traffic:kafka_lag
+        expr: |
+          sum by (topic, group)(kafka_consumer_group_lag)
+
+      # Active WebSocket connections
+      - record: golden:traffic:websocket_active
+        expr: sum(messaging_websocket_connections_active)
+
+  # ── SATURATION ─────────────────────────────────────────────────────────────
+  - name: golden.saturation
+    interval: 15s
+    rules:
+      # CPU utilization by pod
+      - record: golden:saturation:cpu
+        expr: |
+          sum by (pod)(rate(container_cpu_usage_seconds_total{namespace="projectx-prod"}[5m]))
+          / sum by (pod)(container_spec_cpu_quota{namespace="projectx-prod"} / container_spec_cpu_period{namespace="projectx-prod"})
+
+      # Memory utilization by pod
+      - record: golden:saturation:memory
+        expr: |
+          sum by (pod)(container_memory_working_set_bytes{namespace="projectx-prod"})
+          / sum by (pod)(container_spec_memory_limit_bytes{namespace="projectx-prod"})
+
+      # JVM heap utilization (Spring Boot services)
+      - record: golden:saturation:jvm_heap
+        expr: |
+          jvm_memory_used_bytes{area="heap"}
+          / jvm_memory_max_bytes{area="heap"}
+
+      # Redis memory saturation
+      - record: golden:saturation:redis_memory
+        expr: redis_memory_used_bytes / redis_memory_max_bytes
+
+      # Connection pool saturation
+      - record: golden:saturation:hikari_pool
+        expr: |
+          hikaricp_connections_active
+          / hikaricp_connections_max
+
+      # Thread pool saturation
+      - record: golden:saturation:thread_pool
+        expr: |
+          jvm_threads_live_threads / jvm_threads_peak_threads
+
+  # ── SLO Bindings ───────────────────────────────────────────────────────────
+  - name: golden.slo_alerts
+    rules:
+      # Latency SLO: P99 ≤ 500ms (all services except AI)
+      - alert: GoldenSignal_LatencySLO
+        expr: golden:latency:p99{job!="ai-service"} > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          signal: latency
+        annotations:
+          summary: "{{ $labels.job }} P99 latency {{ $value | humanizeDuration }} exceeds 500ms SLO"
+
+      # Error SLO: <0.1% error rate
+      - alert: GoldenSignal_ErrorSLO
+        expr: golden:errors:rate5m > 0.001
+        for: 5m
+        labels:
+          severity: warning
+          signal: errors
+        annotations:
+          summary: "{{ $labels.job }} error rate {{ $value | humanizePercentage }} exceeds 0.1% SLO"
+
+      # Saturation: CPU > 80%
+      - alert: GoldenSignal_CPUSaturation
+        expr: golden:saturation:cpu > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          signal: saturation
+        annotations:
+          summary: "{{ $labels.pod }} CPU at {{ $value | humanizePercentage }}"
+
+      # Saturation: Memory > 85%
+      - alert: GoldenSignal_MemorySaturation
+        expr: golden:saturation:memory > 0.85
+        for: 5m
+        labels:
+          severity: critical
+          signal: saturation
+        annotations:
+          summary: "{{ $labels.pod }} memory at {{ $value | humanizePercentage }} — OOMKill risk"
+
+      # Saturation: Redis > 90%
+      - alert: GoldenSignal_RedisSaturation
+        expr: golden:saturation:redis_memory > 0.9
+        for: 5m
+        labels:
+          severity: critical
+          signal: saturation
+        annotations:
+          summary: "Redis memory at {{ $value | humanizePercentage }} — eviction/OOM imminent"

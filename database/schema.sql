@@ -74,3 +74,10 @@ CREATE INDEX IF NOT EXISTS idx_matches_user ON matches(user_id, created_at DESC)
 CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_analytics_user ON analytics(user_id, calculated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_suggestions_user ON ai_suggestions(user_id, created_at DESC);
+
+-- Enterprise Optimizations & Advanced Indexing
+CREATE INDEX IF NOT EXISTS idx_users_preferences_gin ON users USING GIN (preferences);
+CREATE INDEX IF NOT EXISTS idx_analytics_platform_gin ON analytics USING GIN (platform_metrics);
+CREATE INDEX IF NOT EXISTS idx_messages_platform_hash ON messages USING HASH (platform_name);
+CREATE INDEX IF NOT EXISTS idx_ai_suggestions_context_gin ON ai_suggestions USING GIN (input_context);
+CREATE INDEX IF NOT EXISTS idx_notifications_type ON notifications(type) WHERE is_read = false;

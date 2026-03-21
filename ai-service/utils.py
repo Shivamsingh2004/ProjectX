@@ -1,135 +1,109 @@
-import asyncio
-import json
+"""Utility helpers for the AI service: sanitisation and Redis response caching."""
+
+import hashlib
 import logging
-import time
-import uuid
-from contextlib import asynccontextmanager
+import os
+import re
 from typing import Optional
 
-from fastapi import FastAPI, Request, status, HTTPException
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator
-from slowapi import Limiter
-from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
-from starlette.middleware.base import BaseHTTPMiddleware
-
-from ai_service import generate_reply
-from utils import (
-    build_cache_key,
-    get_cached_response,
-    sanitize_context,
-    sanitize_message,
-    set_cached_response,
-)
-
-# Logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Rate limiter
-limiter = Limiter(key_func=get_remote_address, default_limits=["10/minute"])
+# ---------------------------------------------------------------------------
+# Sanitisation helpers
+# ---------------------------------------------------------------------------
+
+_MAX_MESSAGE_LENGTH = 1000
+_MAX_CONTEXT_LENGTH = 500
+
+_DANGEROUS_PATTERNS = re.compile(
+    r"(system\s*:|assistant\s*:|<\|im_start\|>|<\|im_end\|>|\[INST\]|\[/INST\])",
+    re.IGNORECASE,
+)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("AI service started")
-    yield
-    logger.info("AI service stopped")
+def sanitize_text(text: str, max_length: int) -> str:
+    if not text:
+        return ""
+
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    text = _DANGEROUS_PATTERNS.sub("", text)
+    text = text.strip()
+
+    if len(text) > max_length:
+        logger.warning("Input truncated from %d to %d", len(text), max_length)
+        text = text[:max_length]
+
+    return text
 
 
-app = FastAPI(title="AI Service", version="2.0.0", lifespan=lifespan)
-app.state.limiter = limiter
+def sanitize_message(message: str) -> str:
+    return sanitize_text(message, _MAX_MESSAGE_LENGTH)
 
 
-# Middleware
-class RequestLoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        request_id = str(uuid.uuid4())
-        request.state.request_id = request_id
-
-        start = time.perf_counter()
-        response = await call_next(request)
-        duration = (time.perf_counter() - start) * 1000
-
-        logger.info(f"{request.method} {request.url.path} {duration:.2f}ms")
-        response.headers["X-Request-ID"] = request_id
-        return response
+def sanitize_context(context: str) -> str:
+    return sanitize_text(context, _MAX_CONTEXT_LENGTH)
 
 
-app.add_middleware(RequestLoggingMiddleware)
+def sanitize_input(text: Optional[str]) -> Optional[str]:
+    if text is None:
+        return None
+    return sanitize_text(text, max(len(text), 1))
 
 
-# Models
-class ReplySuggestionRequest(BaseModel):
-    message: str
-    context: Optional[str] = None
+# ---------------------------------------------------------------------------
+# Redis caching helpers
+# ---------------------------------------------------------------------------
 
-    @field_validator("message")
-    def validate_message(cls, v):
-        if not v.strip():
-            raise ValueError("message cannot be empty")
-        if len(v) > 2000:
-            raise ValueError("message too long")
-        return v
+_redis_client = None
+CACHE_TTL = int(os.getenv("AI_CACHE_TTL", "600"))
 
 
-class ReplySuggestionResponse(BaseModel):
-    success: bool
-    suggestions: Optional[list[str]] = None
-    error: Optional[str] = None
+def _get_redis():
+    global _redis_client
 
-
-# Exception handlers
-@app.exception_handler(RateLimitExceeded)
-async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
-    return JSONResponse(status_code=429, content={"error": "Rate limit exceeded"})
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_handler(request: Request, exc: RequestValidationError):
-    return JSONResponse(status_code=422, content={"error": str(exc)})
-
-
-@app.exception_handler(Exception)
-async def global_handler(request: Request, exc: Exception):
-    logger.exception("Unhandled error")
-    return JSONResponse(status_code=500, content={"error": "Internal error"})
-
-
-# Endpoint (MERGED: async + caching)
-@app.post("/ai/reply-suggestion", response_model=ReplySuggestionResponse)
-@limiter.limit("10/minute")
-async def reply_suggestion(request: Request, payload: ReplySuggestionRequest):
-    message = sanitize_message(payload.message)
-    context = sanitize_context(payload.context or "")
-
-    cache_key = build_cache_key(message, context)
-
-    # Cache check
-    cached = get_cached_response(cache_key)
-    if cached:
-        try:
-            return ReplySuggestionResponse(
-                success=True,
-                suggestions=json.loads(cached),
-            )
-        except:
-            pass
+    if _redis_client is not None:
+        return _redis_client
 
     try:
-        suggestions = await asyncio.to_thread(generate_reply, message, context)
-    except Exception:
-        return ReplySuggestionResponse(
-            success=False,
-            error="AI generation failed",
+        import redis
+
+        _redis_client = redis.Redis(
+            host=os.getenv("REDIS_HOST", "localhost"),
+            port=int(os.getenv("REDIS_PORT", "6379")),
+            password=os.getenv("REDIS_PASSWORD") or None,
+            decode_responses=True,
+            socket_connect_timeout=2,
         )
+        _redis_client.ping()
+        logger.info("Redis connected")
+    except Exception as exc:
+        logger.warning("Redis unavailable: %s", exc)
+        _redis_client = None
 
-    # Cache store
-    set_cached_response(cache_key, json.dumps(suggestions))
+    return _redis_client
 
-    return ReplySuggestionResponse(
-        success=True,
-        suggestions=suggestions,
-    )
+
+def build_cache_key(message: str, context: str) -> str:
+    raw = f"{message.strip().lower()}::{context.strip().lower()}"
+    return "ai:reply:" + hashlib.sha256(raw.encode()).hexdigest()
+
+
+def get_cached_response(key: str) -> Optional[str]:
+    try:
+        client = _get_redis()
+        if not client:
+            return None
+        return client.get(key)
+    except Exception as exc:
+        logger.warning("Redis GET failed: %s", exc)
+        return None
+
+
+def set_cached_response(key: str, value: str) -> None:
+    try:
+        client = _get_redis()
+        if not client:
+            return
+        client.setex(key, CACHE_TTL, value)
+    except Exception as exc:
+        logger.warning("Redis SET failed: %s", exc)

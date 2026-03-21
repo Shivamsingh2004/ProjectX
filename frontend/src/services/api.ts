@@ -37,7 +37,7 @@ api.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
 
 // Normalise every error into a structured ApiError
 api.interceptors.response.use(
-  (res) => res,
+  (res: any) => res,
   (err: AxiosError<{ message?: string }>) => {
     const message =
       err.response?.data?.message ??
@@ -71,19 +71,22 @@ async function withRetry<T>(
 // AI reply-suggestion helper
 // ---------------------------------------------------------------------------
 export async function fetchAiSuggestions(
-  context: { conversationId: string; lastMessage: string },
+  message: string,
   signal?: AbortSignal,
-): Promise<string[]> {
+): Promise<{ tone: string; suggestions: string[] }> {
   try {
-    const { data } = await withRetry(() =>
-      api.post<{ suggestions: string[] }>("/ai/reply-suggestion", context, { signal }),
-    );
-    return data.suggestions?.length ? data.suggestions : FALLBACK_SUGGESTIONS;
+    const response = await withRetry(() =>
+      api.post<{ tone?: string; suggestions?: string[] }>("/api/ai/reply", { message }, { signal }),
+    ) as unknown as { data: { tone?: string; suggestions?: string[] } };
+    const { data } = response;
+    return {
+      tone: data.tone ?? "casual",
+      suggestions: data.suggestions?.length ? data.suggestions : FALLBACK_SUGGESTIONS,
+    };
   } catch (err) {
-    // AbortError – don't log, just propagate so the caller can handle it
     if (err instanceof DOMException && err.name === "AbortError") throw err;
     if ((err as { name?: string }).name === "CanceledError") throw err;
     console.error("[api] fetchAiSuggestions failed, using fallback:", err);
-    return FALLBACK_SUGGESTIONS;
+    return { tone: "casual", suggestions: FALLBACK_SUGGESTIONS };
   }
 }

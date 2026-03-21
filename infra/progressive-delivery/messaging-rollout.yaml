@@ -1,0 +1,140 @@
+# ============================================================================
+# Progressive Delivery: Canary Deployment with Automatic Rollback
+# Uses Argo Rollouts + Istio traffic management
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: messaging-service
+  namespace: projectx-prod
+  labels:
+    app: messaging-service
+    cost-center: messaging
+spec:
+  replicas: 5
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: messaging-service
+  strategy:
+    canary:
+      # Istio traffic routing (zero-downtime, weighted split)
+      trafficRouting:
+        istio:
+          virtualServices:
+            - name: messaging-service-vs
+              routes:
+                - primary
+          destinationRule:
+            name: messaging-service-dr
+            canarySubsetName: canary
+            stableSubsetName: stable
+      # Progressive weight schedule
+      steps:
+        - setWeight: 5
+        - pause: { duration: 2m }   # Bake time: collect metrics
+        - setWeight: 15
+        - pause: { duration: 3m }
+        - setWeight: 30
+        - pause: { duration: 5m }
+        - setWeight: 60
+        - pause: { duration: 5m }
+        - setWeight: 100
+      # Automated analysis gates
+      analysis:
+        templates:
+          - templateName: success-rate-check
+        startingStep: 2
+        args:
+          - name: service-name
+            value: messaging-service
+      # Automatic rollback on failure
+      maxSurge: "25%"
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: messaging-service
+        sidecar.istio.io/inject: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8084"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      containers:
+        - name: messaging-service
+          image: projectx/messaging-service:latest
+          ports:
+            - containerPort: 8084
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8084
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8084
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8084
+            failureThreshold: 30
+            periodSeconds: 2
+---
+# AnalysisTemplate: Prometheus query to validate canary health
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate-check
+  namespace: projectx-prod
+spec:
+  args:
+    - name: service-name
+  metrics:
+    - name: success-rate
+      interval: 60s
+      count: 5
+      successCondition: result[0] >= 0.995
+      failureLimit: 2
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring:9090
+          query: |
+            sum(rate(
+              http_server_requests_seconds_count{
+                job="{{ args.service-name }}",
+                status=~"2.."
+              }[2m]
+            )) /
+            sum(rate(
+              http_server_requests_seconds_count{
+                job="{{ args.service-name }}"
+              }[2m]
+            ))
+    - name: p99-latency
+      interval: 60s
+      count: 5
+      successCondition: result[0] <= 0.5
+      failureLimit: 2
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring:9090
+          query: |
+            histogram_quantile(0.99,
+              sum by (le)(rate(
+                http_server_requests_seconds_bucket{
+                  job="{{ args.service-name }}"
+                }[2m]
+              ))
+            )
