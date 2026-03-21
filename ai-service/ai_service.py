@@ -99,6 +99,13 @@ def _build_client() -> OpenAI:
 
 
 def _build_user_prompt(message: str, context: Optional[str], tone: str) -> str:
+    """Build an LLM prompt tailored to the detected tone and user context.
+
+    Args:
+        message: The message to reply to (already sanitized).
+        context: Optional plain-text AI context string for the user (e.g. from UserService).
+        tone: Detected tone — one of "funny", "flirty", "serious", "casual".
+    """
     tone_instructions = {
         "funny": (
             "Be witty and playful. Use light humor, Gen-Z slang (ngl, lowkey, no cap), and "

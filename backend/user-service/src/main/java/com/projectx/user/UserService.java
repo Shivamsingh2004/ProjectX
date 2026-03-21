@@ -65,10 +65,10 @@ public class UserService {
   public Map<String, List<String>> getUserPreferencesMap(String userId) {
     UserProfile profile = getUserProfile(userId);
     return Map.of(
-        "interests", profile.interests(),
-        "preferences", profile.preferences(),
-        "personalityTraits", profile.personalityTraits(),
-        "activityBehavior", profile.activityBehavior()
+        "interests", profile.interests() != null ? profile.interests() : List.of(),
+        "preferences", profile.preferences() != null ? profile.preferences() : List.of(),
+        "personalityTraits", profile.personalityTraits() != null ? profile.personalityTraits() : List.of(),
+        "activityBehavior", profile.activityBehavior() != null ? profile.activityBehavior() : List.of()
     );
   }
 

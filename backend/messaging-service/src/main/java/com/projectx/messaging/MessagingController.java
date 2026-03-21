@@ -31,6 +31,7 @@ public class MessagingController {
 
   @GetMapping("/conversations")
   public List<Map<String, String>> conversations() {
+    // TODO: replace with actual database query in production
     return List.of(
         Map.of("id", "conv-1", "name", "Alex",   "platform", "Tinder"),
         Map.of("id", "conv-2", "name", "Riley",  "platform", "Bumble"),
